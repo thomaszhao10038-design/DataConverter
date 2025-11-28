@@ -150,7 +150,7 @@ def build_output_excel(sheets_dict):
 
             col_start += 4
 
-        # Line chart (optional, unchanged)
+        # Line chart per sheet
         if dates:
             chart = LineChart()
             chart.title = f"{sheet_name} - Power Consumption"
@@ -167,17 +167,21 @@ def build_output_excel(sheets_dict):
             ws.add_chart(chart, f'G{max_row_used+2}')
 
     # -----------------------------
-    # Add Total Sheet
+    # Total Sheet
     # -----------------------------
     ws_total = wb.create_sheet("Total")
     all_dates = sorted(total_data.keys())
     sheet_names = list(sheets_dict.keys())
 
-    ws_total.cell(row=1, column=1, value="Date").font = title_font
-    for i, sheet_name in enumerate(sheet_names):
-        ws_total.cell(row=1, column=2+i, value=sheet_name).font = title_font
-    ws_total.cell(row=1, column=2+len(sheet_names), value="Total Load").font = title_font
+    # Header styling
+    header_fill_total = PatternFill(start_color='90EE90', end_color='90EE90', fill_type='solid')
+    for col_idx, col_name in enumerate(["Date"] + sheet_names + ["Total Load"], start=1):
+        cell = ws_total.cell(row=1, column=col_idx, value=col_name)
+        cell.font = Font(bold=True)
+        cell.fill = header_fill_total
+        cell.alignment = Alignment(horizontal="center")
 
+    # Fill data
     for r_idx, date_val in enumerate(all_dates, start=2):
         ws_total.cell(row=r_idx, column=1, value=date_val)
         total_load = 0
@@ -187,11 +191,31 @@ def build_output_excel(sheets_dict):
             total_load += value
         ws_total.cell(row=r_idx, column=2+len(sheet_names), value=total_load)
 
-    # Format columns width
+    # Apply borders and formatting
+    for r in ws_total.iter_rows(min_row=1, max_row=1+len(all_dates), min_col=1, max_col=2+len(sheet_names)):
+        for cell in r:
+            cell.border = thin_border
+            if isinstance(cell.value, float):
+                cell.number_format = numbers.FORMAT_NUMBER_00
+
+    # Auto width
     for col in range(1, 3+len(sheet_names)):
         ws_total.column_dimensions[chr(64+col)].width = 15
 
-    # Save workbook to BytesIO
+    # Add line chart for total load
+    chart_total = LineChart()
+    chart_total.title = "Total Load Over Time"
+    chart_total.y_axis.title = "kW"
+    chart_total.x_axis.title = "Date"
+    data_ref = Reference(ws_total, min_col=2+len(sheet_names), min_row=1, max_row=1+len(all_dates))
+    dates_ref = Reference(ws_total, min_col=1, min_row=2, max_row=1+len(all_dates))
+    chart_total.add_data(data_ref, titles_from_data=True)
+    chart_total.set_categories(dates_ref)
+    chart_total.height = 12
+    chart_total.width = 30
+    ws_total.add_chart(chart_total, "A10")
+
+    # Save workbook
     stream = BytesIO()
     wb.save(stream)
     stream.seek(0)
@@ -208,7 +232,7 @@ def app():
         
         Leading and trailing zero values (representing missing readings) are filtered out and appear blank, but zero values *within* the active recording period are kept.
         
-        The output Excel file includes a **line chart**, a **Max Power Summary table**, and a **Total sheet** with daily max power for all sheets.
+        The output Excel file includes a **line chart**, a **Max Power Summary table**, and a **Total sheet** with daily max power for all sheets and a line chart of total load.
     """)
 
     uploaded = st.file_uploader("Upload .xlsx file", type=["xlsx"])
