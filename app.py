@@ -51,9 +51,12 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     # Drop rows where timestamp conversion failed (resulted in NaT)
     df = df.dropna(subset=[TIMESTAMP_COL]).sort_values(by=TIMESTAMP_COL).reset_index(drop=True)
     
-    # FIX: Ensure Power column is numeric before aggregation
-    # Coerce non-numeric values to NaN, and then drop rows with NaN in the power column
+    # FIX: Explicitly clean and ensure Power column is numeric before aggregation
+    # 1. Convert to string and strip whitespace (in case of hidden chars/spaces)
+    df[POWER_COL_IN] = df[POWER_COL_IN].astype(str).str.strip()
+    # 2. Coerce non-numeric values to NaN
     df[POWER_COL_IN] = pd.to_numeric(df[POWER_COL_IN], errors='coerce')
+    # 3. Drop rows where power value is invalid
     df = df.dropna(subset=[POWER_COL_IN])
     
     # Set the valid timestamp column as the index for resampling
