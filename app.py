@@ -254,6 +254,9 @@ def build_output_excel(sheets_dict):
         # Calculate "Total Load" (sum of daily maxes across all sheets)
         sheet_columns = [col for col in total_summary_df.columns if col != 'Date']
         total_summary_df['Total Load'] = total_summary_df[sheet_columns].sum(axis=1, skipna=True)
+        
+        # Sort by date
+        total_summary_df = total_summary_df.sort_values(by='Date')
 
         # Reorder columns: Date, Sheet1, Sheet2, ..., Total Load
         total_summary_df = total_summary_df[['Date'] + sheet_columns + ['Total Load']]
@@ -272,14 +275,19 @@ def build_output_excel(sheets_dict):
             
         # Write data rows
         row_num = 2
+        # Use itertuples(index=False) which returns a named tuple. 
+        # Column access must be done carefully, ideally by position (index).
         for r in total_summary_df.itertuples(index=False):
-            # Column 1: Date
-            ws_total.cell(row=row_num, column=1, value=r.Date.strftime('%Y-%m-%d'))
+            # The tuple 'r' structure is: (Date, Sheet1_Max_kW, Sheet2_Max_kW, ..., Total_Load)
             
-            # Write sheet data (daily max power)
+            # Column 1 (index 0): Date
+            ws_total.cell(row=row_num, column=1, value=r[0].strftime('%Y-%m-%d'))
+            
+            # Write sheet data (daily max power) - Starts at index 1 in the tuple 'r'
             for i, sheet_name in enumerate(sheet_columns):
-                # Data is accessed by attribute name (which is the sheet name)
-                value = getattr(r, sheet_name)
+                # Data is accessed by positional index (i+1, since 'Date' is at index 0 of the tuple)
+                # This fixes the AttributeError caused by spaces/special characters in sheet names.
+                value = r[i + 1] 
                 cell = ws_total.cell(row=row_num, column=2 + i, value=value)
                 cell.number_format = numbers.FORMAT_NUMBER_00
                 
