@@ -130,7 +130,7 @@ def build_output_excel(sheets_dict):
             date_str_short = date.strftime('%d-%b') 
             
             # Use original date string for main table header
-            date_str_full = date.strftime('%Y-%m-%d')
+            date_str_full = date.strftime('%Y-%m-%d') # This will be the chart Series title
             
             day_data = df[df["Date"] == date].sort_values("Time")
             data_rows_count = len(day_data)
@@ -222,18 +222,16 @@ def build_output_excel(sheets_dict):
                 # Data starts at row 3, column col_start + 3 (kW)
                 data_ref = Reference(ws, min_col=col_start + 3, min_row=merge_start_row, max_row=merge_end_row, max_col=col_start + 3)
                 
-                # Create a Reference for the series title (the merged date header in Row 1)
-                title_ref = Reference(ws, min_col=col_start, min_row=1)
+                # FIX: Use the date string directly as the title to avoid openpyxl descriptor errors
+                series_title_string = date_str_full
                 
-                # FIX: Instantiate Series with no arguments and assign properties later.
-                # This bypasses strict constructor type-checking that was causing the TypeError.
+                # Instantiate Series with no arguments
                 series_idx = len(chart_data_refs)
-                
                 series = Series()
-                series.idx = series_idx      # Explicitly set the index (should be an integer)
-                series.values = data_ref     # Assign data reference
-                series.title = title_ref     # Assign title reference
-                
+                series.idx = series_idx      
+                series.values = data_ref     
+                series.title = series_title_string # Assign simple string title
+
                 chart_data_refs.append(series)
 
 
