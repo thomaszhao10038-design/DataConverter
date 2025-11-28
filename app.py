@@ -2,8 +2,9 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 from openpyxl import Workbook
-# Import PatternFill, Font, and numbers for enhanced styling and number formatting
+# Import PatternFill, Font, numbers, and chart components for enhanced styling and chart generation
 from openpyxl.styles import Alignment, PatternFill, Font, Border, Side, numbers 
+from openpyxl.chart import LineChart, Reference, Series
 
 # --- Configuration ---
 POWER_COL_OUT = 'PSumW'
@@ -92,7 +93,7 @@ def process_sheet(df, timestamp_col, psum_col):
 # BUILD EXCEL FORMAT
 # -----------------------------
 def build_output_excel(sheets_dict):
-    """Builds the final Excel workbook with the wide, merged column format."""
+    """Builds the final Excel workbook with the wide, merged column format and adds a chart."""
     wb = Workbook()
     if 'Sheet' in wb.sheetnames:
          wb.remove(wb['Sheet'])
@@ -117,6 +118,11 @@ def build_output_excel(sheets_dict):
         col_start = 1
         daily_max_summary = [] # List to store max kW for the final summary table
         max_row_used = 0 # Track the lowest row written to across all columns
+        
+        # Lists to store the cell ranges for the chart data
+        time_series_cols = []
+        kw_series_cols = []
+
 
         for date in dates:
             # 1. Update date format to DD-Mon (e.g., 12-Nov) for the summary table
@@ -166,7 +172,8 @@ def build_output_excel(sheets_dict):
                 ws.cell(row=idx, column=col_start+2, value=power_w)
                 
                 # Column 4: kW (W / 1000) (col_start + 3) - Applies absolute value (ABS).
-                ws.cell(row=idx, column=col_start+3, value=abs(power_w) / 1000)
+                kw_value = abs(power_w) / 1000
+                ws.cell(row=idx, column=col_start+3, value=kw_value)
 
             
             # 5. Add summary statistics (Total, Average, Max)
@@ -205,13 +212,20 @@ def build_output_excel(sheets_dict):
                 # Collect data for final summary table using short date format
                 daily_max_summary.append((date_str_short, max_kw_abs))
 
+                # Collect data ranges for charting
+                time_range = Reference(ws, min_col=col_start + 1, min_row=merge_start_row, max_col=col_start + 1, max_row=merge_end_row)
+                kw_range = Reference(ws, min_col=col_start + 3, min_row=merge_start_row, max_col=col_start + 3, max_row=merge_end_row)
+                
+                time_series_cols.append(time_range)
+                kw_series_cols.append(kw_range)
+
 
             col_start += 4
             
         # 6. Add final summary table for Max kW across all days
+        final_summary_row = max_row_used + 2 
+        
         if daily_max_summary:
-            # Start the summary table 2 rows below the end of the last day block
-            final_summary_row = max_row_used + 2 
             
             # --- Summary Table Title (Merged over 2 columns) ---
             title_cell = ws.cell(row=final_summary_row, column=1, value="Daily Max Power (kW) Summary")
@@ -261,6 +275,39 @@ def build_output_excel(sheets_dict):
                 max_cell.fill = fill_style
                 max_cell.alignment = Alignment(horizontal="right")
                 
+        
+        # 7. Add Chart (Line Graph of all 10-minute data)
+        if kw_series_cols:
+            chart = LineChart()
+            chart.title = "10-Minute Absolute Power (kW) Over Time"
+            chart.style = 10 
+            chart.y_axis.title = "Absolute Power (kW)"
+            chart.x_axis.title = "Local Time Stamp"
+            
+            # Add a series for each day
+            for i, (kw_ref, time_ref) in enumerate(zip(kw_series_cols, time_series_cols)):
+                # The title for the series (legend) comes from the main date header for that block
+                # The date header is 3 columns to the left of the kW data, on row 1.
+                date_header_cell = ws.cell(row=1, column=kw_ref.min_col - 3)
+                
+                series = Series(
+                    kw_ref, 
+                    xvalues=time_ref, 
+                    title=date_header_cell.value # Use the date string as the series title
+                )
+                chart.series.append(series)
+
+            # Anchor the chart next to the Daily Max Summary table. 
+            # The table starts at (final_summary_row - table height, Col 1).
+            # The chart will start at the same row as the summary table title, but in Column 4 (D).
+            chart_anchor = ws.cell(row=max_row_used + 2, column=4).coordinate # Anchor at D column
+            
+            # Set chart size (e.g., 12 cells wide by 10 cells high)
+            chart.width = 12
+            chart.height = 10 
+            
+            ws.add_chart(chart, chart_anchor)
+
 
     stream = BytesIO()
     wb.save(stream)
