@@ -21,9 +21,11 @@ def process_power_data(uploaded_file):
     try:
         # Use filename extension to determine reader
         if uploaded_file.name.endswith('.csv'):
+            # The 'engine' parameter is not needed for CSV reading unless dealing with specific delimiters/encodings
             df_raw = pd.read_csv(uploaded_file)
         elif uploaded_file.name.endswith(('.xlsx', '.xls')):
             # Assumes the data is in the first sheet for simplicity
+            # Pandas will use 'openpyxl' or 'xlrd' (if installed) to read the Excel file
             df_raw = pd.read_excel(uploaded_file, sheet_name=0)
         else:
             st.error("Unsupported file type. Please upload a .csv or .xlsx file.")
@@ -44,7 +46,8 @@ def process_power_data(uploaded_file):
 
     # 2. Convert 'Timestamp' to datetime objects and set as index
     try:
-        df['Timestamp'] = pd.to_datetime(df['Timestamp'], dayfirst=True) # Assuming Day-first format from snippet
+        # Assuming Day-first format (e.g., 26/11/2025) from the snippet
+        df['Timestamp'] = pd.to_datetime(df['Timestamp'], dayfirst=True) 
         df = df.set_index('Timestamp').sort_index()
     except Exception as e:
         st.error(f"Error converting timestamp column: {e}. Check your date format.")
@@ -129,7 +132,9 @@ if uploaded_file is not None:
         if df_output is not None:
             # Create a Pandas Excel writer object for in-memory storage
             output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            # FIX: Removing explicit engine='xlsxwriter' to rely on installed 'openpyxl'
+            # which is typically more reliable for basic Excel writing.
+            with pd.ExcelWriter(output) as writer:
                 # The sheet name can be anything; '10min_Data' is descriptive
                 df_output.to_excel(writer, sheet_name='10min_Data', index=False)
             
