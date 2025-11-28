@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 from openpyxl import Workbook
-from openpyxl.utils import get_column_letter
 from openpyxl.styles import Alignment
 
 # -----------------------------
@@ -28,7 +27,10 @@ def round_to_10min(ts):
 # PROCESS SINGLE SHEET
 # -----------------------------
 def process_sheet(df, timestamp_col, psum_col):
+    # Convert timestamp and drop invalid rows
     df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce")
+    df = df.dropna(subset=[timestamp_col, psum_col])
+
     df["Rounded"] = df[timestamp_col].apply(round_to_10min)
 
     # Extract date and time
