@@ -4,353 +4,268 @@ from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, PatternFill, Font, Border, Side, numbers
 from openpyxl.chart import LineChart, Reference
-# CRUCIAL IMPORT: Explicitly import Series for robust chart construction
-from openpyxl.chart.series import Series 
+from openpyxl.chart.series import Series
 
 # --- Configuration ---
 POWER_COL_OUT = 'PSumW'
 
-# Output Column mapping (relative to col_start, 1-based index in the 4-column block)
-COL_UTC_REL = 1    # UTC Offset (merged column)
-COL_TIME_REL = 2   # Local Time Stamp (X-Axis Categories)
-COL_W_REL = 3      # Active Power (W)
-COL_KW_REL = 4     # kW (Y-Axis Data)
-COL_BLOCK_WIDTH = 4
-
 # -----------------------------
-# PROCESS SINGLE SHEET (TIDY DATAFRAME GENERATION)
+# PROCESS SINGLE SHEET
 # -----------------------------
 def process_sheet(df, timestamp_col, psum_col):
     """
-    Processes a single sheet: cleans data, handles dates, aggregates to 10-min sums,
-    pads the result, and calculates the absolute kW column.
+    Processes a single sheet DataFrame:
+    1. Standardizes columns and converts types.
+    2. Resamples data to 10-minute intervals by summing power values.
+    3. Pads the resulting series with zeros for missing 10-minute slots.
+    4. Calculates power in kW (absolute value).
     """
-    # 1. Cleaning and Preparation
     df.columns = df.columns.astype(str).str.strip()
-    # Use dayfirst=True to handle common European formats (dd/mm/yyyy)
+    # Convert timestamp column, allowing for day-first format
     df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce", dayfirst=True)
     
-    # Handle commas as decimal separators before converting to numeric
-    power_series = df[psum_col].astype(str).str.strip()
-    power_series = power_series.str.replace(',', '.', regex=False)
-    df[psum_col] = pd.to_numeric(power_series, errors='coerce')
-    
+    # Convert power column, handling comma as decimal separator
+    df[psum_col] = pd.to_numeric(df[psum_col].astype(str).str.replace(',', '.', regex=False), errors='coerce')
     df = df.dropna(subset=[timestamp_col, psum_col])
-    
     if df.empty:
         return pd.DataFrame()
     
-    # 2. Aggregate Data and Resampling
+    # Resample to 10-minute intervals
     df_indexed = df.set_index(timestamp_col)
     df_indexed.index = df_indexed.index.floor('10min')
+    # Sum the power values within each 10-minute slot
     resampled_data = df_indexed[psum_col].groupby(level=0).sum()
+    
     df_out = resampled_data.reset_index()
-    df_out.columns = ['Rounded', POWER_COL_OUT] 
+    df_out.columns = ['Rounded', POWER_COL_OUT]
     
     if df_out.empty or df_out['Rounded'].isna().all():
         return pd.DataFrame()
     
-    # 3. Robust Padding
+    # Get the original dates present in the data for filtering later
     original_dates = set(df_out['Rounded'].dt.date)
     min_dt = df_out['Rounded'].min().floor('D')
     max_dt_exclusive = df_out['Rounded'].max().ceil('D') 
-    
     if min_dt >= max_dt_exclusive:
         return pd.DataFrame()
-
+    
     # Create a full 10-minute time index for the date range
     full_time_index = pd.date_range(
-        start=min_dt.to_pydatetime(), 
+        start=min_dt.to_pydatetime(),
         end=max_dt_exclusive.to_pydatetime(),
         freq='10min',
-        inclusive='left' 
+        inclusive='left'
     )
-
+    
+    # Reindex and fill missing 10-minute slots with 0 (padding)
     df_indexed_for_reindex = df_out.set_index('Rounded')
-    # Reindex and fill missing 10-min intervals with 0
     df_padded_series = df_indexed_for_reindex[POWER_COL_OUT].reindex(full_time_index, fill_value=0)
     
     grouped = df_padded_series.reset_index().rename(columns={'index': 'Rounded'})
     grouped.columns = ['Rounded', POWER_COL_OUT]
     
-    # 4. Final Formatting
+    # Extract Date and Time components
     grouped["Date"] = grouped["Rounded"].dt.date
-    grouped["Time"] = grouped["Rounded"].dt.strftime("%H:%M") 
-
-    # Filter to only include dates that were present in the original data (removes the padding before min/after max date)
+    grouped["Time"] = grouped["Rounded"].dt.strftime("%H:%M")
+    
+    # Filter back to only include the dates that were originally present
     grouped = grouped[grouped["Date"].isin(original_dates)]
     
-    # Calculate absolute kW (W / 1000)
+    # Calculate power in kW (absolute value)
     grouped['kW'] = grouped[POWER_COL_OUT].abs() / 1000
-    
     return grouped
 
 # -----------------------------
-# BUILD EXCEL FORMAT
+# BUILD EXCEL
 # -----------------------------
 def build_output_excel(sheets_dict):
-    """Builds the final Excel workbook with the wide, merged column format and includes a daily max kW chart."""
+    """
+    Creates an Excel workbook with processed data formatted for each date,
+    including daily statistics, a multi-series line chart, and a daily summary table.
+    """
     wb = Workbook()
     if 'Sheet' in wb.sheetnames:
         wb.remove(wb['Sheet'])
-
-    # Define styles
-    header_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid') # Light Blue
+    
+    # Styles setup
+    header_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid')
     title_font = Font(bold=True, size=12)
-    thin_border = Border(left=Side(style='thin'), 
-                          right=Side(style='thin'), 
-                          top=Side(style='thin'), 
-                          bottom=Side(style='thin'))
-    data_fill_alt = PatternFill(start_color='F0F8FF', end_color='F0F8FF', fill_type='solid')
-
+    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'),
+                         top=Side(style='thin'), bottom=Side(style='thin'))
+    
     for sheet_name, df in sheets_dict.items():
         ws = wb.create_sheet(sheet_name)
         dates = sorted(df["Date"].unique())
-
         col_start = 1
-        daily_max_summary = []
         max_row_used = 0
+        daily_max_summary = []
         
-        chart_categories_ref = None 
         chart_series_list = []
-
-
+        categories_ref = None # Reference for Time (X-axis)
+        
         for date in dates:
-            date_str_short = date.strftime('%d-%b') 
-            date_str_full = date.strftime('%Y-%m-%d')
-            
             day_data = df[df["Date"] == date].sort_values("Time")
-            data_rows_count = len(day_data)
+            n_rows = len(day_data)
+            # Data starts at row 3 (after the two header rows)
+            merge_start = 3 
+            merge_end = merge_start + n_rows - 1
+
+            date_str_full = date.strftime('%Y-%m-%d')
+            date_str_short = date.strftime('%d-%b')
+
+            # --- Data Table Generation ---
             
-            # Data starts on Row 3
-            merge_start_row = 3
-            merge_end_row = 2 + data_rows_count
+            # Merge header (Date)
+            ws.merge_cells(start_row=1, start_column=col_start, end_row=1, end_column=col_start+3)
+            ws.cell(row=1, column=col_start, value=date_str_full).alignment = Alignment(horizontal="center")
+
+            # Sub-headers
+            ws.cell(row=2, column=col_start, value="UTC Offset (minutes)")
+            ws.cell(row=2, column=col_start+1, value="Local Time Stamp")
+            ws.cell(row=2, column=col_start+2, value="Active Power (W)")
+            ws.cell(row=2, column=col_start+3, value="kW")
+
+            # Merge UTC Offset (placeholder column, merged down the rows)
+            ws.merge_cells(start_row=merge_start, start_column=col_start, end_row=merge_end, end_column=col_start)
+            ws.cell(row=merge_start, column=col_start, value=date_str_full).alignment = Alignment(horizontal="center", vertical="center")
+
+            # Fill data
+            for idx, r in enumerate(day_data.itertuples(), start=merge_start):
+                ws.cell(row=idx, column=col_start+1, value=r.Time) # Local Time Stamp (Time)
+                ws.cell(row=idx, column=col_start+2, value=getattr(r, POWER_COL_OUT)) # Active Power (W)
+                ws.cell(row=idx, column=col_start+3, value=r.kW).number_format = numbers.FORMAT_NUMBER_00 # kW
+
+            # Summary stats
+            stats_row_start = merge_end + 1
+            sum_kw = day_data['kW'].sum()
+            mean_kw = day_data['kW'].mean()
+            max_kw = day_data['kW'].max()
             
-            # --- 1. Merge date header (Row 1) ---
-            ws.merge_cells(start_row=1, start_column=col_start, end_row=1, end_column=col_start + COL_BLOCK_WIDTH - 1)
-            # This cell holds the date string used for the chart legend
-            ws.cell(row=1, column=col_start, value=date_str_full).alignment = Alignment(horizontal="center", vertical="center")
-
-            # --- 2. Sub-headers (Row 2) ---
-            ws.cell(row=2, column=col_start + COL_UTC_REL - 1, value="UTC Offset (minutes)")
-            ws.cell(row=2, column=col_start + COL_TIME_REL - 1, value="Local Time Stamp")
-            ws.cell(row=2, column=col_start + COL_W_REL - 1, value="Active Power (W)")
-            ws.cell(row=2, column=col_start + COL_KW_REL - 1, value="kW")
-
-            # --- 3. UTC Offset Column Merging (Col 1) ---
-            if data_rows_count > 0:
-                utc_col = col_start + COL_UTC_REL - 1
-                ws.merge_cells(start_row=merge_start_row, start_column=utc_col, end_row=merge_end_row, end_column=utc_col)
-                utc_cell = ws.cell(row=merge_start_row, column=utc_col, value=date_str_full)
-                utc_cell.alignment = Alignment(horizontal="center", vertical="center")
-
-
-            # --- 4. Fill 10-min rows (Data starts on Row 3) ---
-            for idx, r in enumerate(day_data.itertuples(), start=merge_start_row):
-                
-                # Column 2: Local Time Stamp
-                ws.cell(row=idx, column=col_start + COL_TIME_REL - 1, value=r.Time) 
-                
-                # Column 3: Active Power (W)
-                ws.cell(row=idx, column=col_start + COL_W_REL - 1, value=getattr(r, POWER_COL_OUT))
-                
-                # Column 4: kW (W / 1000)
-                ws.cell(row=idx, column=col_start + COL_KW_REL - 1, value=r.kW)
-
+            ws.cell(row=stats_row_start, column=col_start+1, value="Total")
+            ws.cell(row=stats_row_start, column=col_start+3, value=sum_kw).number_format = numbers.FORMAT_NUMBER_00
+            ws.cell(row=stats_row_start+1, column=col_start+1, value="Average")
+            ws.cell(row=stats_row_start+1, column=col_start+3, value=mean_kw).number_format = numbers.FORMAT_NUMBER_00
+            ws.cell(row=stats_row_start+2, column=col_start+1, value="Max")
+            ws.cell(row=stats_row_start+2, column=col_start+3, value=max_kw).number_format = numbers.FORMAT_NUMBER_00
             
-            # --- 5. Add summary statistics (Total, Average, Max) ---
-            if data_rows_count > 0:
-                # Calculations
-                sum_w = day_data[POWER_COL_OUT].sum()
-                mean_w = day_data[POWER_COL_OUT].mean()
-                max_w = day_data[POWER_COL_OUT].max()
-                
-                sum_kw = day_data['kW'].sum()
-                mean_kw = day_data['kW'].mean()
-                max_kw = day_data['kW'].max() 
-                
-                stats_row_start = merge_end_row + 1
-                
-                # TOTAL Row
-                ws.cell(row=stats_row_start, column=col_start + COL_TIME_REL - 1, value="Total")
-                ws.cell(row=stats_row_start, column=col_start + COL_W_REL - 1, value=sum_w).number_format = numbers.FORMAT_NUMBER
-                ws.cell(row=stats_row_start, column=col_start + COL_KW_REL - 1, value=sum_kw).number_format = numbers.FORMAT_NUMBER_00
-                
-                # AVERAGE Row
-                ws.cell(row=stats_row_start + 1, column=col_start + COL_TIME_REL - 1, value="Average")
-                ws.cell(row=stats_row_start + 1, column=col_start + COL_W_REL - 1, value=mean_w).number_format = numbers.FORMAT_NUMBER
-                ws.cell(row=stats_row_start + 1, column=col_start + COL_KW_REL - 1, value=mean_kw).number_format = numbers.FORMAT_NUMBER_00
-                
-                # MAX Row
-                ws.cell(row=stats_row_start + 2, column=col_start + COL_TIME_REL - 1, value="Max")
-                ws.cell(row=stats_row_start + 2, column=col_start + COL_W_REL - 1, value=max_w).number_format = numbers.FORMAT_NUMBER
-                ws.cell(row=stats_row_start + 2, column=col_start + COL_KW_REL - 1, value=max_kw).number_format = numbers.FORMAT_NUMBER_00
-                
-                max_row_used = max(max_row_used, stats_row_start + 2)
-                
-                daily_max_summary.append((date_str_short, max_kw))
-                
-                # --- 6. Chart Data Preparation (Explicit Series Constructor) ---
-                
-                # Categories (X-axis) reference (Local Time Stamp column - Col 2)
-                if chart_categories_ref is None:
-                    cat_col = col_start + COL_TIME_REL - 1
-                    chart_categories_ref = Reference(ws, min_col=cat_col, min_row=merge_start_row, max_row=merge_end_row)
-
-                # Data (Y-axis) reference (kW column - Col 4)
-                data_col = col_start + COL_KW_REL - 1
-                data_ref = Reference(ws, min_col=data_col, min_row=merge_start_row, max_row=merge_end_row, max_col=data_col)
-                
-                # Title reference (The merged cell at row 1, col_start contains the date string)
-                title_ref = Reference(ws, min_col=col_start, min_row=1, max_col=col_start, max_row=1)
-                
-                # Use Series constructor with values and title reference (FIX for stability)
-                series = Series(values=data_ref, title=title_ref)
-                
-                chart_series_list.append(series)
-
-            col_start += COL_BLOCK_WIDTH
+            max_row_used = max(max_row_used, stats_row_start+2)
+            daily_max_summary.append((date_str_short, max_kw))
             
-        # --- 7. Add Line Chart for Daily Power Profiles ---
-        if chart_series_list and chart_categories_ref:
+            # --- Chart Series References ---
+            
+            # The X-axis categories are the Time stamps (column +1)
+            if categories_ref is None:
+                categories_ref = Reference(ws, min_col=col_start+1, min_row=merge_start, max_row=merge_end)
+            
+            # The data series (Y values) are the kW values (column +3)
+            data_ref = Reference(ws, min_col=col_start+3, min_row=merge_start, max_row=merge_end)
+            
+            # Create a Series object for the chart, titled by the full date
+            series = Series(data_ref, title=date_str_full)
+            chart_series_list.append(series)
+            
+            col_start += 4 # Move to the next set of 4 columns for the next day
+        
+        # --- Create Chart ---
+        if chart_series_list:
             chart = LineChart()
-            chart.style = 10
+            chart.title = f"{sheet_name} - power consumption"
             
-            chart.title = f"{sheet_name} - power consumption (kW)"
+            # CORRECTED AXIS TITLES: Time on X, Power on Y
+            chart.x_axis.title = "Time"
+            chart.y_axis.title = "Power (kW)"
             
-            # X-axis (Time stamps)
-            chart.x_axis.title = "Time" 
-            # Y-axis (kW values)
-            chart.y_axis.title = "Power (kW)" 
-
-            chart.set_categories(chart_categories_ref)
-            for series in chart_series_list:
-                chart.series.append(series)
+            # This line ensures the category axis uses the Time labels
+            chart.set_categories(categories_ref) 
             
-            # Set tickLblSkip to 1 for 20-minute interval labels (since data is 10-min)
-            chart.x_axis.tickLblSkip = 1 
-
-            chart_anchor = f'G{max_row_used + 2}'
-            ws.add_chart(chart, chart_anchor)
+            # Add each date series to the chart
+            for s in chart_series_list:
+                chart.series.append(s)
             
-            # Ensure max_row_used is updated to place the summary table below the chart
-            max_row_used = max(max_row_used, max_row_used + 22)
-
-
-        # --- 8. Add final summary table for Max kW across all days ---
+            # Position the chart below the data tables
+            ws.add_chart(chart, f'G{max_row_used+2}')
+        
+        # --- Final Daily Max Summary Table ---
         if daily_max_summary:
-            final_summary_row = max_row_used + 2 
+            # Position summary table
+            start_row = max_row_used + 22 
+            ws.cell(row=start_row, column=1, value="Daily Max Power (kW) Summary").font = title_font
+            ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=2)
             
-            # Title
-            title_cell = ws.cell(row=final_summary_row, column=1, value="Daily Max Power (kW) Summary")
-            ws.merge_cells(start_row=final_summary_row, start_column=1, end_row=final_summary_row, end_column=2)
-            title_cell.alignment = Alignment(horizontal="center", vertical="center")
-            title_cell.font = title_font
-
-            # Headers
-            final_summary_row += 1
-            day_header_cell = ws.cell(row=final_summary_row, column=1, value="Day")
-            day_header_cell.fill = header_fill
-            day_header_cell.border = thin_border
-            max_header_cell = ws.cell(row=final_summary_row, column=2, value="Max (kW)")
-            max_header_cell.fill = header_fill
-            max_header_cell.border = thin_border
-
-            # Data
-            for date_idx, (date_str, max_kw) in enumerate(daily_max_summary):
-                row = final_summary_row + 1 + date_idx
+            start_row += 1
+            ws.cell(row=start_row, column=1, value="Day").fill = header_fill
+            ws.cell(row=start_row, column=2, value="Max (kW)").fill = header_fill
+            
+            for d, (date_str, max_kw) in enumerate(daily_max_summary):
+                row = start_row + 1 + d
+                ws.cell(row=row, column=1, value=date_str)
+                ws.cell(row=row, column=2, value=max_kw).number_format = numbers.FORMAT_NUMBER_00
                 
-                # Apply alternating row color
-                fill_style = data_fill_alt if (row % 2) == 0 else PatternFill(fill_type=None)
-                
-                # Column 1: Day (DD-Mon format)
-                day_cell = ws.cell(row=row, column=1, value=date_str)
-                day_cell.border = thin_border
-                day_cell.fill = fill_style
-                day_cell.alignment = Alignment(horizontal="center")
-                
-                # Column 2: Max (kW) - Value rounded to 2dp
-                max_cell = ws.cell(row=row, column=2, value=max_kw)
-                max_cell.number_format = numbers.FORMAT_NUMBER_00
-                max_cell.border = thin_border
-                max_cell.fill = fill_style
-                max_cell.alignment = Alignment(horizontal="right")
-                
+            # Set column widths for summary table
             ws.column_dimensions['A'].width = 15
             ws.column_dimensions['B'].width = 15
 
-
+    # Save workbook to BytesIO stream
     stream = BytesIO()
     wb.save(stream)
     stream.seek(0)
     return stream
 
 # -----------------------------
-# STREAMLIT UI
+# STREAMLIT APP
 # -----------------------------
 def app():
-    st.title("📊 Excel 10-Minute Electricity Data Converter")
-    st.markdown("""
-        Upload an **Excel file (.xlsx)** with time-series data. Each sheet is processed 
-        separately to calculate the total absolute power (W) consumed/generated 
-        in fixed **10-minute intervals**. The output Excel file includes a robust 
-        **line chart** showing the daily kW profiles and a **Max Power Summary table**.
-        """)
-
+    """
+    Main Streamlit application interface.
+    """
+    st.set_page_config(page_title="Electricity Data Converter", layout="wide")
+    st.title("⚡ Excel 10-Minute Electricity Data Converter")
+    st.markdown("Upload your Excel file containing high-resolution power data. The app will resample it into 10-minute intervals, pad missing intervals with zero, and generate a new Excel file with daily tables, charts, and summaries.")
+    
     uploaded = st.file_uploader("Upload .xlsx file", type=["xlsx"])
-
+    
     if uploaded:
-        xls = pd.ExcelFile(uploaded)
-        result_sheets = {}
-
-        for sheet_name in xls.sheet_names:
-            st.info(f"Processing sheet: **{sheet_name}**")
-            try:
+        try:
+            xls = pd.ExcelFile(uploaded)
+            result_sheets = {}
+            
+            # Automatically detect column names across all sheets
+            for sheet_name in xls.sheet_names:
                 df = pd.read_excel(uploaded, sheet_name=sheet_name)
-            except Exception as e:
-                st.error(f"Error reading sheet '{sheet_name}'. {e}")
-                continue
+                df.columns = df.columns.astype(str).str.strip()
+                
+                # List of common names for Timestamp and Power columns
+                timestamp_col_candidates = ["Date & Time","Date&Time","Timestamp","DateTime","Local Time","TIME","ts", "Rounded"]
+                psum_col_candidates = ["PSum (W)","Psum (W)","PSum","P (W)","Power", POWER_COL_OUT]
 
-            df.columns = df.columns.astype(str).str.strip()
+                timestamp_col = next((c for c in df.columns if c in timestamp_col_candidates), None)
+                psum_col = next((c for c in df.columns if c in psum_col_candidates), None)
+                
+                if timestamp_col and psum_col:
+                    processed = process_sheet(df, timestamp_col, psum_col)
+                    if not processed.empty:
+                        result_sheets[sheet_name] = processed
+                    else:
+                        st.warning(f"Sheet '{sheet_name}' processed but resulted in empty data (possible date/power parsing failure).")
+                else:
+                    st.error(f"Sheet '{sheet_name}' is missing required columns. Looked for Timestamp candidates: {timestamp_col_candidates} and Power candidates: {psum_col_candidates}")
 
-            possible_time_cols = ["Date & Time", "Date&Time", "Timestamp", "DateTime", "Local Time", "TIME", "ts"]
-            timestamp_col = next((col for col in df.columns if col in possible_time_cols), None)
-            
-            if timestamp_col is None:
-                st.error(f"No valid **Timestamp** column found in sheet **{sheet_name}**.")
-                continue
-
-            possible_psum_cols = ["PSum (W)", "Psum (W)", "PSum", "P (W)", "Power"]
-            psum_col = next((col for col in df.columns if col in possible_psum_cols), None)
-            
-            if psum_col is None:
-                st.error(f"No valid **PSum** column found in sheet **{sheet_name}**.")
-                continue
-            
-            try:
-                processed = process_sheet(df, timestamp_col, psum_col)
-            except Exception as e:
-                st.error(f"A critical error occurred while processing sheet **{sheet_name}**'s dates. Error: {e}")
-                processed = pd.DataFrame()
-            
-            if not processed.empty:
-                result_sheets[sheet_name] = processed
-                st.success(f"Sheet **{sheet_name}** processed successfully and contains **{len(processed['Date'].unique())}** days of data.")
+            if result_sheets:
+                output_stream = build_output_excel(result_sheets)
+                st.success("Data successfully processed and Excel file is ready for download!")
+                
+                st.download_button(
+                    "📥 Download Converted Excel", 
+                    output_stream,
+                    file_name=f"Converted_{uploaded.name.replace('.xlsx', '')}_10min.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
             else:
-                st.warning(f"Sheet **{sheet_name}** contained no usable data after cleaning or the date range was invalid.")
+                st.error("No valid data was found across any sheets for conversion.")
 
+        except Exception as e:
+            st.error(f"An error occurred during file processing: {e}")
+            st.code(f"Error details: {e}", language='text')
 
-        if result_sheets:
-            output_stream = build_output_excel(result_sheets)
-            st.success(f"Conversion complete for {len(result_sheets)} sheet(s).")
-            st.download_button(
-                label="📥 Download Converted Excel",
-                data=output_stream,
-                file_name="Converted_Output.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        elif uploaded and not result_sheets:
-            st.error("No sheets were successfully processed. Please check the input file for correct column names and data.")
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     app()
