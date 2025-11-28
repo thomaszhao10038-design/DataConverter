@@ -5,8 +5,6 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, PatternFill, Font, Border, Side, numbers
 from openpyxl.chart import LineChart, Reference, Series
 from openpyxl.utils import get_column_letter
-from openpyxl.drawing.line import LineProperties
-from openpyxl.chart.marker import MarkerProperties # <-- CORRECTED IMPORT PATH
 
 # --- Configuration ---
 POWER_COL_OUT = 'PSumW'
@@ -312,32 +310,13 @@ def build_output_excel(sheets_dict):
             chart_total.width = 30
             
             data_max_row = len(sorted_dates) + 1
+            total_cols = len(sheet_names_list) + 2
             
-            # 1. Add individual sheets (Columns 2 up to len(sheet_names_list) + 1)
-            for i, sheet_name in enumerate(sheet_names_list):
-                col = 2 + i
-                data_ref = Reference(ws_total, min_col=col, min_row=1, max_col=col, max_row=data_max_row)
-                s = Series(values=data_ref, title_from_data=True)
-                
-                # Apply desired styling for individual sheets: thinner line, with circular markers
-                s.graphicalProperties.line = LineProperties(w=15000) # Thinner line (1.5pt)
-                s.marker = MarkerProperties('circle')
-                
-                chart_total.series.append(s)
+            # Chart Data Reference: Cover all value columns (Sheet 1...Sheet N + Total Load)
+            # Starts from Column 2 (since Col 1 is Date) to total_cols
+            data_ref = Reference(ws_total, min_col=2, min_row=1, max_col=total_cols, max_row=data_max_row)
+            chart_total.add_data(data_ref, titles_from_data=True)
 
-            # 2. Add Total Load (The final column: index len(sheet_names_list) + 2)
-            total_load_col = len(sheet_names_list) + 2
-            data_ref_total = Reference(ws_total, min_col=total_load_col, min_row=1, max_col=total_load_col, max_row=data_max_row)
-            
-            s_total = Series(values=data_ref_total, title_from_data=True)
-            
-            # Style the Total Load series: thicker, green line, with triangular markers
-            # Using Green color code: '00B050' (or a suitable green/red)
-            s_total.graphicalProperties.line = LineProperties(w=40000, solidFill="00B050") 
-            s_total.marker = MarkerProperties('triangle')
-
-            chart_total.series.append(s_total)
-            
             # Category Axis: Date Column (Col 1)
             cats_ref = Reference(ws_total, min_col=1, min_row=2, max_row=data_max_row)
             chart_total.set_categories(cats_ref)
@@ -345,7 +324,6 @@ def build_output_excel(sheets_dict):
             ws_total.add_chart(chart_total, "B" + str(data_max_row + 3))
 
     stream = BytesIO()
-    # Clean up default sheet if it was never used and a new one was created
     if 'Sheet' in wb.sheetnames and len(wb.sheetnames) > len(sheets_dict) + (1 if total_sheet_data else 0):
         wb.remove(wb['Sheet'])
         
@@ -366,7 +344,7 @@ def app():
         
         The output Excel file includes:
         1. **Individual Sheet Analysis:** A **line chart** and a **Max Power Summary table** for each day.
-        2. **Total Summary Sheet:** A comparative table and graph of daily max power across all sheets, now with **thinner lines and markers** for individual data and a **thick green line** for the Total Load.
+        2. **Total Summary Sheet:** A comparative table and graph of daily max power across all sheets, **including the Total Load series**.
     """)
 
     uploaded = st.file_uploader("Upload .xlsx file", type=["xlsx"])
