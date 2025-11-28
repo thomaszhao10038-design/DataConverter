@@ -1,278 +1,170 @@
 import streamlit as st
 import pandas as pd
-import re
-from io import BytesIO
-import numpy as np
-from datetime import datetime, timedelta
+import io
+import datetime
 
-# Import xlsxwriter (or openpyxl) for Excel writing
-try:
-    import xlsxwriter 
-except ImportError:
-    pass
-try:
-    import openpyxl
-except ImportError:
-    pass
+# --- Configuration ---
+# Define the expected input column names in the source Excel file
+TIMESTAMP_COL = 'Timestamp' 
+POWER_COL_IN = 'PSum (W)'
 
+# Define the output header columns that repeat for each day (4 columns total)
+OUTPUT_HEADERS = [
+    'UTC Offset (minutes)', 
+    'Local Time Stamp', 
+    'Active Power (W)', 
+    'kW'
+]
 
-st.set_page_config(layout="wide")
-st.title("⚡ Streamlined Electricity Data Aggregator")
-st.markdown("---")
-st.markdown("This tool is optimized for **multi-sheet XLSX files**. It consolidates data, aggregates it to a specified frequency, zero-fills all gaps, and provides a clean Excel export.")
-
-
-# Dictionary to map user-friendly options to Pandas frequency strings and display labels
-FREQ_MAP = {
-    '10-minute': {'pandas_freq': '10T', 'label': '10-minute period'},
-    'Hourly': {'pandas_freq': 'H', 'label': 'Hourly period'},
-    'Daily': {'pandas_freq': 'D', 'label': 'Daily period'},
-}
-
-# HARDCODED: Set interpolation method to 'none' to enforce zero-filling
-INTERPOLATION_METHOD = 'none' 
-# Since we are removing outlier checking, max_kwh/min_kwh are fixed to defaults.
-DEFAULT_MAX_KWH = 1000000 
-DEFAULT_MIN_KWH = -1000000
-
-
-# ---------- UI Controls and File Upload ----------
-
-st.sidebar.header("Data Control & Analysis")
-uploaded_file = st.file_uploader("Upload an Excel file (.xlsx) containing energy data across multiple sheets", type=["xlsx"])
-
-# ---------- Frequency Selection Control ----------
-st.sidebar.markdown("### Aggregation Settings")
-selected_freq_key = st.sidebar.selectbox(
-    "Select Aggregation Period",
-    list(FREQ_MAP.keys()),
-    index=0 # Default to 10-minute
-)
-
-# Get the dynamic frequency settings
-freq_str = FREQ_MAP[selected_freq_key]['pandas_freq']
-period_label = FREQ_MAP[selected_freq_key]['label']
-# ---------------------------------------------------
-
-
-# ---------- Helper Functions (Simplified) ----------
-
-def detect_metadata(lines):
-    """Attempts to infer the energy unit (e.g., kWh, Watt) from the file content."""
-    unit = 'Watt' # Defaulting to Watt based on provided snippet
-    unit_patterns = {
-        r'(?:k|K)W[hH]|kW-h': 'kWh',
-        r'(?:M|m)W[hH]|MW-h': 'MWh',
-        r'(?:W|w)att|\(W\)|PSum': 'Watt', # Expanded patterns
-        r'(?:J|j)oule': 'Joule'
-    }
-    sample_text = " ".join(lines[:200])
-    for pattern, detected_unit in unit_patterns.items():
-        if re.search(pattern, sample_text, re.IGNORECASE):
-            unit = detected_unit
-            break
-    return unit
-
-def extract_lines(file):
+def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     """
-    Extracts raw text lines from a single XLSX file. 
-    Consolidates data from ALL sheets.
+    Transforms a single input sheet (DataFrame) into the required wide-format 
+    structure (4 columns per day).
+
+    Args:
+        df: The input DataFrame containing time series data.
+        sheet_name: The name of the original sheet.
+
+    Returns:
+        A new DataFrame in the required wide format, or None if essential columns are missing.
     """
-    lines = []
+    st.info(f"Processing sheet: **{sheet_name}**...")
+    
+    # 1. Input Validation and Preparation
+    required_cols = [TIMESTAMP_COL, POWER_COL_IN]
+    if not all(col in df.columns for col in required_cols):
+        st.error(f"Sheet **{sheet_name}** is missing required columns. Expected: '{TIMESTAMP_COL}' and '{POWER_COL_IN}'.")
+        return None
+
     try:
-        # Reads ALL sheets into a dictionary of DataFrames
-        df = pd.read_excel(file, sheet_name=None, dtype=str)
-        for sheet_name, sheet_df in df.items():
-            # Consolidate all columns from all sheets into one list of strings
-            for col in sheet_df.columns:
-                lines += sheet_df[col].dropna().astype(str).tolist()
+        # Convert the timestamp column to datetime objects
+        df[TIMESTAMP_COL] = pd.to_datetime(df[TIMESTAMP_COL])
     except Exception as e:
-        st.error(f"Error during file reading: {e}")
-    return lines
+        st.error(f"Error converting column '{TIMESTAMP_COL}' to datetime in sheet {sheet_name}. Error: {e}")
+        return None
 
-def parse_energy_data(lines, max_kwh=DEFAULT_MAX_KWH, min_kwh=DEFAULT_MIN_KWH):
-    """
-    Extracts Datetime and Reading values from raw lines.
-    Data validation is ignored as per new instructions.
-    """
-    # Common Date/Time patterns
-    timestamp_patterns = [
-        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?", # YYYY-MM-DD HH:MM:SS
-        r"\d{2}/\d{2}/\d{4} \d{2}:\d{2}(:\d{2})?", # DD/MM/YYYY HH:MM:SS or MM/DD/YYYY HH:MM:SS
-        r"\d{4}\d{2}\d{2}\s\d{4}"                # YYYYMMDD HHMM
-    ]
-    timestamp_regex = re.compile("|".join(timestamp_patterns))
-    number_regex = re.compile(r"[-+]?(\d*\.\d+|\d+)")
+    # Sort data by timestamp to ensure consistent intervals
+    df = df.sort_values(by=TIMESTAMP_COL).reset_index(drop=True)
 
-    data = []
-    buffered_ts_str = None
-
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-            
-        ts_match = timestamp_regex.search(line)
-        tokens = re.split(r"[,\s;]+", line)
+    # 2. Derive new columns based on requirements
+    
+    # Date (for "UTC Offset" column)
+    df['Date'] = df[TIMESTAMP_COL].dt.date
+    
+    # 10-minute interval time (for "Local Time Stamp" column)
+    df['Local Time Stamp'] = df[TIMESTAMP_COL].dt.strftime('%H:%M')
+    
+    # Active Power (W) (from input)
+    df['Active Power (W)'] = df[POWER_COL_IN]
+    
+    # kW: (modulus assumed to mean magnitude, then convert W to kW)
+    df['kW'] = df['Active Power (W)'].abs() / 1000
+    
+    # 3. Restructure Data into Wide Format (Day by Day)
+    
+    final_df = pd.DataFrame()
+    all_dates = df['Date'].unique()
+    
+    # Track column index for naming (A, E, I, ...)
+    current_col_index = 0
+    
+    for date in all_dates:
+        # Filter data for the current day
+        day_group = df[df['Date'] == date].copy()
         
-        current_ts_str = ts_match.group().strip() if ts_match else None
-        found_value = None
+        # Select the 4 required output metrics
+        day_data = day_group[['Date', 'Local Time Stamp', 'Active Power (W)', 'kW']].reset_index(drop=True)
         
-        for token in tokens:
-            if number_regex.fullmatch(token):
-                if current_ts_str and token in current_ts_str:
-                    continue 
-
-                try:
-                    val = float(token)
-                    # No validation applied; all found values are accepted
-                    found_value = val
-                    break
-                except ValueError:
-                    continue
+        # Rename the columns internally for clarity before concatenation
+        day_data.columns = OUTPUT_HEADERS
         
-        if current_ts_str and found_value is not None:
-            # Timestamp and value found in the same line
-            data.append({"Datetime_str": current_ts_str, "Reading": found_value})
-            buffered_ts_str = None
-                
-        elif found_value is not None and buffered_ts_str:
-            # Value found on a separate line after a timestamp
-            data.append({"Datetime_str": buffered_ts_str, "Reading": found_value})
-            buffered_ts_str = None
-            
-        elif current_ts_str:
-            # Only timestamp found; buffer it
-            buffered_ts_str = current_ts_str
-            
-    df = pd.DataFrame(data)
-    
-    if df.empty:
-        return pd.DataFrame({'Datetime': [], 'Reading': []})
-
-    df['Datetime'] = pd.to_datetime(df['Datetime_str'], errors='coerce')
-    df.drop(columns=['Datetime_str'], inplace=True)
-    
-    df = df.dropna(subset=['Datetime'])
-    df = df.sort_values('Datetime').drop_duplicates(subset=['Datetime'], keep='first').reset_index(drop=True)
-    
-    return df
-
-def clean_energy_df(df: pd.DataFrame, freq: str) -> pd.DataFrame:
-    """Sets index, enforces frequency, aggregates, and fills gaps with zero."""
-    df = df.copy()
-    if 'Datetime' not in df.columns or df['Datetime'].empty:
-        return df
-
-    # Use a flag 'Raw_Count' to distinguish between True Gaps (Count=0) and actual readings
-    df['Raw_Count'] = 1 
-    df.set_index('Datetime', inplace=True)
-    
-    # 1. Aggregate/Resample Data
-    df_resampled = df.resample(freq).agg({
-        'Reading': 'sum', 
-        'Raw_Count': 'sum' 
-    }).rename(columns={'Reading': 'Aggregated_Reading', 'Raw_Count': 'Raw_Count_sum'}) 
-
-    
-    # 2. Zero-Fill and Flag
-    is_true_gap = (df_resampled['Raw_Count_sum'] == 0)
-    
-    # Fill NaN (gaps) with 0
-    df_resampled['Zero_Filled_Reading'] = df_resampled['Aggregated_Reading'].fillna(0)
-    
-    # Assign the final flag
-    df_resampled['Flag'] = 'OK (Aggregated/Binned)'
-    df_resampled['Flag'] = np.where(is_true_gap, 'True Gap (Zero-Filled)', df_resampled['Flag'])
-    
-    # Calculate Cumulative Electricity based on the filled, continuous data
-    df_resampled['Cumulative_Reading'] = df_resampled['Zero_Filled_Reading'].cumsum().fillna(0)
-    
-    # Final cleanup and indexing
-    df_resampled.drop(columns=['Aggregated_Reading', 'Raw_Count_sum'], inplace=True)
-    df_resampled.reset_index(inplace=True)
-    return df_resampled
-
-# ---------- Main Application Logic ----------
-if uploaded_file:
-    
-    # 1. Extraction and Unit Detection
-    lines = extract_lines(uploaded_file)
-    unit = detect_metadata(lines) 
-    
-    # 2. Parsing
-    df_raw = parse_energy_data(lines)
-    if df_raw.empty:
-        st.error("❌ No valid timestamp–reading pairs were found in the Excel file.")
-        st.stop()
+        # Set the required date value for the "UTC Offset (minutes)" column (first column of the block)
+        # Note: The requirement is to show the date here. The column name "UTC Offset (minutes)" is misleading 
+        # but the content must be the date as per the prompt.
+        day_data['UTC Offset (minutes)'] = date.strftime('%Y-%m-%d')
         
-    st.success(f"Successfully extracted {df_raw.shape[0]} raw readings. Detected unit: **{unit}**.")
+        # Rename columns to maintain the repeating structure (e.g., A, B, C, D, A, B, C, D...)
+        # Concatenate the current day's 4-column block to the final DataFrame
+        final_df = pd.concat([final_df, day_data], axis=1)
 
-    with st.expander("Raw Data Status"):
-        st.info(f"Raw data timestamps were inconsistent and have been consolidated. Data is now being resampled/aggregated to **{period_label}** and all gaps are Zero-Filled.")
+    st.success(f"Sheet **{sheet_name}** processed successfully. Found {len(all_dates)} days of data.")
+    return final_df
 
-    # 3. Resampling/Cleaning and Interpolation
-    df_clean = clean_energy_df(df_raw, freq=freq_str)
-
-    # ---------- Show Results (Minimal Display) ----------
+def app():
+    """Main Streamlit application function."""
+    st.set_page_config(page_title="Energy Data Converter", layout="wide")
     
-    df_clean_display = df_clean.rename(columns={
-        'Zero_Filled_Reading': f'Usage_Per_{period_label.replace(" ", "_").replace("-", "")}_{unit}', 
-        'Cumulative_Reading': f'Cumulative_Total_{unit}' 
-    })
-
-    st.subheader("🧹 Cleaned & Resampled Data")
-    st.caption(f"The table below shows the continuous time series where all gaps are Zero-Filled and data is aggregated to the {period_label}.")
-    
-    # Select only the relevant columns for the final display and export
-    df_final_export = df_clean_display[[
-        'Datetime', 
-        f'Usage_Per_{period_label.replace(" ", "_").replace("-", "")}_{unit}', 
-        f'Cumulative_Total_{unit}', 
-        'Flag'
-    ]].copy()
-    
-    st.dataframe(df_final_export, use_container_width=True)
-
-    # ---------- Data Integrity Check (Simplified) ----------
-    st.markdown("### Data Integrity Check")
-    flag_counts = df_clean['Flag'].value_counts()
-    
-    zero_filled_count = flag_counts.get('True Gap (Zero-Filled)', 0)
-    ok_count = flag_counts.get('OK (Aggregated/Binned)', 0)
-    
-    if zero_filled_count > 0:
-        st.warning(f"  - **{zero_filled_count}** periods were **True Gaps** (no raw data present in the {period_label} bin) and were Zero-Filled.")
-        st.info(f"Summary: A total of **{zero_filled_count}** periods required Zero-Filling to create a continuous {period_label} series.")
-    else:
-        st.success("The time series is continuous and contained no gaps at the selected resolution.")
+    st.title("💡 Energy Data Wide-Format Converter")
+    st.markdown("""
+        Upload an Excel file (.xlsx) containing time-series energy data. 
         
-    st.success(f"✅ **{ok_count}** periods contained aggregated raw data.")
-    st.markdown("---")
-
-
-    # ---------- Download Excel (DATA ONLY) ----------
-    output = BytesIO()
-    
-    excel_engine = "openpyxl"
-    if 'xlsxwriter' in globals() and xlsxwriter is not None:
-        excel_engine = "xlsxwriter"
+        **Expected Input Columns:**
+        1.  `Timestamp` (or equivalent column containing date and time information)
+        2.  `PSum (W)` (Active Power data)
         
-    try:
-        with pd.ExcelWriter(output, engine=excel_engine) as writer:
-            sheet_name = "Cleaned_Data"
-            
-            # Write the final export data to the Excel sheet
-            df_final_export.to_excel(writer, index=False, sheet_name=sheet_name, startrow=0)
-            
-    except Exception as e:
-        st.error(f"Error during Excel export: {e}")
-        st.stop()
+        The program will convert the data into a wide format where each day's data 
+        occupies a repeating block of 4 columns.
+        """)
 
-    output.seek(0)
-    st.download_button(
-        "Download Cleaned Data (Excel)",
-        data=output,
-        file_name=f"{uploaded_file.name.split('.')[0]}_cleaned_data_export_{selected_freq_key.lower().replace('-', '')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    uploaded_file = st.file_uploader(
+        "Choose an Excel file (.xlsx)", 
+        type=["xlsx"],
+        help="The file can contain multiple sheets, which will be processed independently."
     )
+
+    if uploaded_file is not None:
+        try:
+            # Use ExcelFile to read all sheets
+            xls = pd.ExcelFile(uploaded_file)
+            sheet_names = xls.sheet_names
+            
+            output_buffer = io.BytesIO()
+            
+            # Use Pandas ExcelWriter to write processed data to multiple sheets in memory
+            with pd.ExcelWriter(output_buffer, engine='xlsxwriter') as writer:
+                all_processed_successfully = True
+                
+                for sheet_name in sheet_names:
+                    # Read the current sheet
+                    try:
+                        df_in = xls.parse(sheet_name)
+                    except Exception as e:
+                        st.error(f"Could not read sheet '{sheet_name}'. Error: {e}")
+                        all_processed_successfully = False
+                        continue
+                        
+                    # Process the data
+                    df_out = transform_sheet(df_in, sheet_name)
+                    
+                    if df_out is not None and not df_out.empty:
+                        # Write the processed DataFrame to a new sheet in the output file
+                        df_out.to_excel(
+                            writer, 
+                            sheet_name=sheet_name, 
+                            index=False,
+                            header=True # 'First row is the header row'
+                        )
+                    elif df_out is None:
+                        all_processed_successfully = False
+
+                if all_processed_successfully and sheet_names:
+                    # Prepare file for download
+                    st.download_button(
+                        label="Download Processed Excel File (.xlsx)",
+                        data=output_buffer.getvalue(),
+                        file_name="Converted_Energy_Data.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                    st.balloons()
+                    st.info("The processed file is ready for download above!")
+                elif not sheet_names:
+                    st.warning("The uploaded file appears to be empty or has no sheets.")
+                else:
+                    st.error("Processing failed for one or more sheets. Please check the error messages above and ensure your input file format is correct.")
+
+        except Exception as e:
+            st.error(f"An unexpected error occurred during file processing: {e}")
+            st.exception(e)
+
+if __name__ == '__main__':
+    app()
