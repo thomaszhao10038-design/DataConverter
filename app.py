@@ -2,10 +2,8 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 from openpyxl import Workbook
-# Import PatternFill, Font, numbers, and the necessary chart components
-from openpyxl.styles import Alignment, PatternFill, Font, Border, Side, numbers
-from openpyxl.chart import LineChart, Reference
-from openpyxl.chart.series import Series # Crucial for chart data
+# Import PatternFill, Font, and numbers for enhanced styling and number formatting
+from openpyxl.styles import Alignment, PatternFill, Font, Border, Side, numbers 
 
 # --- Configuration ---
 POWER_COL_OUT = 'PSumW'
@@ -33,7 +31,7 @@ def process_sheet(df, timestamp_col, psum_col):
     
     # 2. Aggregate Data (Fixed Logic)
     
-    # df[psum_col] = df[psum_col].abs() is REMOVED to preserve the sign
+    # REMOVED: df[psum_col] = df[psum_col].abs() to preserve the sign (positive/negative)
     
     df_indexed = df.set_index(timestamp_col)
     
@@ -94,10 +92,10 @@ def process_sheet(df, timestamp_col, psum_col):
 # BUILD EXCEL FORMAT
 # -----------------------------
 def build_output_excel(sheets_dict):
-    """Builds the final Excel workbook with the wide, merged column format and includes a daily max kW chart."""
+    """Builds the final Excel workbook with the wide, merged column format."""
     wb = Workbook()
     if 'Sheet' in wb.sheetnames:
-        wb.remove(wb['Sheet'])
+         wb.remove(wb['Sheet'])
 
     # Define styles for the final summary table
     header_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid') # Light Blue
@@ -105,9 +103,9 @@ def build_output_excel(sheets_dict):
     header_font = Font(bold=True)
     # Define a thin black border
     thin_border = Border(left=Side(style='thin'), 
-                          right=Side(style='thin'), 
-                          top=Side(style='thin'), 
-                          bottom=Side(style='thin'))
+                         right=Side(style='thin'), 
+                         top=Side(style='thin'), 
+                         bottom=Side(style='thin'))
     # Alternating row color (AliceBlue)
     data_fill_alt = PatternFill(start_color='F0F8FF', end_color='F0F8FF', fill_type='solid')
 
@@ -119,11 +117,6 @@ def build_output_excel(sheets_dict):
         col_start = 1
         daily_max_summary = [] # List to store max kW for the final summary table
         max_row_used = 0 # Track the lowest row written to across all columns
-        
-        # Define containers to store column references for charting
-        chart_categories_ref = None # Will store the reference to the first 'Local Time Stamp' column
-        chart_data_refs = [] # Will store Series objects for each day's kW data
-
 
         for date in dates:
             # 1. Update date format to DD-Mon (e.g., 12-Nov) for the summary table
@@ -152,9 +145,9 @@ def build_output_excel(sheets_dict):
             if data_rows_count > 0:
                 # Merge the UTC Offset column for all data rows of this day
                 ws.merge_cells(start_row=merge_start_row, 
-                                 start_column=col_start, 
-                                 end_row=merge_end_row, 
-                                 end_column=col_start)
+                               start_column=col_start, 
+                               end_row=merge_end_row, 
+                               end_column=col_start)
                 
                 # Set the UTC Offset value to the DATE STRING and center alignment
                 utc_cell = ws.cell(row=merge_start_row, column=col_start, value=date_str_full)
@@ -211,48 +204,10 @@ def build_output_excel(sheets_dict):
                 
                 # Collect data for final summary table using short date format
                 daily_max_summary.append((date_str_short, max_kw_abs))
-                
-                # --- Chart Data Tracking ---
-                # The first day's Local Time Stamp column provides the categories (x-axis)
-                if chart_categories_ref is None:
-                    # Categories start at row 3, column col_start + 1 (Local Time Stamp)
-                    chart_categories_ref = Reference(ws, min_col=col_start + 1, min_row=merge_start_row, max_row=merge_end_row)
-
-                # Data for kW column (Y-axis series)
-                # Data starts at row 3, column col_start + 3 (kW)
-                data_ref = Reference(ws, min_col=col_start + 3, min_row=merge_start_row, max_row=merge_end_row, max_col=col_start + 3)
-                
-                # Create a Series object for this day's data
-                series = Series(data_ref, title=date_str_short)
-                chart_data_refs.append(series)
 
 
             col_start += 4
             
-        # 7. Add Line Chart for Daily Power Profiles
-        if chart_data_refs and chart_categories_ref:
-            chart = LineChart()
-            chart.style = 10
-            chart.title = f"Daily 10-Minute Absolute Power Profile - {sheet_name}"
-            chart.y_axis.title = "Power (kW)"
-            chart.x_axis.title = "Time"
-
-            # Add all series data
-            for series in chart_data_refs:
-                chart.series.append(series)
-                
-            # Set the categories (X-axis labels)
-            chart.set_categories(chart_categories_ref)
-
-            # Position the chart below the main data blocks, starting at column G (7)
-            # This ensures it doesn't overlap the final summary table starting at A1
-            chart_anchor = f'G{max_row_used + 2}'
-            ws.add_chart(chart, chart_anchor)
-            
-            # Update max_row_used to ensure the summary table starts below the chart
-            max_row_used = max(max_row_used, max_row_used + 22) # Assume chart takes ~20 rows
-
-
         # 6. Add final summary table for Max kW across all days
         if daily_max_summary:
             # Start the summary table 2 rows below the end of the last day block
@@ -306,10 +261,6 @@ def build_output_excel(sheets_dict):
                 max_cell.fill = fill_style
                 max_cell.alignment = Alignment(horizontal="right")
                 
-            # Auto-size the summary columns for readability
-            ws.column_dimensions['A'].width = 15
-            ws.column_dimensions['B'].width = 15
-
 
     stream = BytesIO()
     wb.save(stream)
@@ -324,7 +275,7 @@ def app():
     st.markdown("""
         Upload an **Excel file (.xlsx)** with time-series data. Each sheet is processed 
         separately to calculate the total absolute power (W) consumed/generated 
-        in fixed **10-minute intervals**. The output Excel file now includes a **line chart** showing the daily kW profiles and a **Max Power Summary table**.
+        in fixed **10-minute intervals**.
         """)
 
     uploaded = st.file_uploader("Upload .xlsx file", type=["xlsx"])
@@ -361,8 +312,8 @@ def app():
             try:
                 processed = process_sheet(df, timestamp_col, psum_col)
             except Exception as e:
-                st.error(f"A critical error occurred while processing sheet **{sheet_name}**'s dates. Error: {e}")
-                processed = pd.DataFrame()
+                 st.error(f"A critical error occurred while processing sheet **{sheet_name}**'s dates. Error: {e}")
+                 processed = pd.DataFrame()
             
             if not processed.empty:
                 result_sheets[sheet_name] = processed
@@ -381,7 +332,7 @@ def app():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         elif uploaded and not result_sheets:
-            st.error("No sheets were successfully processed. Please check the input file for correct column names and data.")
+             st.error("No sheets were successfully processed. Please check the input file for correct column names and data.")
 
 if __name__ == '__main__':
     app()
