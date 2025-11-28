@@ -5,7 +5,8 @@ import datetime
 
 # --- Configuration ---
 # Define the expected input column names in the source Excel file
-TIMESTAMP_COL = 'Timestamp' 
+# UPDATED: Changed 'Timestamp' to 'Date & Time' to match the user's input file structure.
+TIMESTAMP_COL = 'Date & Time' 
 POWER_COL_IN = 'PSum (W)'
 
 # Define the output header columns that repeat for each day (4 columns total)
@@ -99,7 +100,7 @@ def app():
         Upload an Excel file (.xlsx) containing time-series energy data. 
         
         **Expected Input Columns:**
-        1.  `Timestamp` (or equivalent column containing date and time information)
+        1.  `Date & Time` (or equivalent column containing date and time information)
         2.  `PSum (W)` (Active Power data)
         
         The program will convert the data into a wide format where each day's data 
