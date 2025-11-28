@@ -190,8 +190,23 @@ def build_output_excel(sheets_dict):
         if dates:
             chart = LineChart()
             chart.title = f"Daily 10-Minute Absolute Power Profile - {sheet_name}"
+            
+            # --- Chart Size Adjustment (Approx. 7.37" H x 19.68" W) ---
+            # Openpyxl uses unitless floats for chart dimensions.
+            chart.height = 7.37 
+            chart.width = 19.68 
+
+            # --- Y-Axis Configuration (kW) ---
             chart.y_axis.title = "kW"
+            chart.y_axis.scaling.min = 0 # Start Y-axis at zero
+            # Set major unit to 10 for better visual ticks (0, 10, 20, ...)
+            chart.y_axis.majorUnit = 10 
+            
+            # --- X-Axis Configuration (Time) ---
             chart.x_axis.title = "Time"
+            # 2 hours = 2/24 = 0.08333... (as a fraction of a day)
+            chart.x_axis.majorUnit = 0.08333333333333333 
+            chart.x_axis.numberFormat = 'h:mm' # Display time in H:MM format
 
             max_rows = max(day_intervals)
             # Find the starting column for the first date's time stamps
