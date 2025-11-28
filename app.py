@@ -104,6 +104,11 @@ def build_output_excel(sheets_dict):
         for date in dates:
             date_str = date.strftime('%Y-%m-%d')
             
+            day_data = df[df["Date"] == date].sort_values("Time")
+            data_rows_count = len(day_data)
+            merge_start_row = 3
+            merge_end_row = 2 + data_rows_count
+            
             # 1. Merge date header (Row 1, columns 1 to 4)
             ws.merge_cells(start_row=1, start_column=col_start, end_row=1, end_column=col_start+3)
             ws.cell(row=1, column=col_start, value=date_str)
@@ -115,15 +120,31 @@ def build_output_excel(sheets_dict):
             ws.cell(row=2, column=col_start+2, value="Active Power (W)")
             ws.cell(row=2, column=col_start+3, value="kW")
 
-            # 3. Fill 10-min rows (Data starts on Row 3)
-            day_data = df[df["Date"] == date].sort_values("Time")
-            
+            # 3. Handle UTC Offset (minutes) Column Merging (FIXED)
+            if data_rows_count > 0:
+                # Merge the UTC Offset column for all data rows of this day
+                ws.merge_cells(start_row=merge_start_row, 
+                               start_column=col_start, 
+                               end_row=merge_end_row, 
+                               end_column=col_start)
+                
+                # Set the UTC Offset value (0) and center alignment once in the merged block
+                utc_cell = ws.cell(row=merge_start_row, column=col_start, value=0)
+                utc_cell.alignment = Alignment(horizontal="center", vertical="center")
+
+
+            # 4. Fill 10-min rows (Data starts on Row 3)
             for idx, r in enumerate(day_data.itertuples(), start=3):
-                ws.cell(row=idx, column=col_start, value=0) 
+                # Column 1 (col_start) is now skipped as its value is set in the merged block above.
+                
+                # Column 2: Local Time Stamp (col_start + 1)
                 ws.cell(row=idx, column=col_start+1, value=r.Time) 
                 
+                # Column 3: Active Power (W) (col_start + 2)
                 power_w = getattr(r, POWER_COL_OUT)
                 ws.cell(row=idx, column=col_start+2, value=power_w)
+                
+                # Column 4: kW (W / 1000) (col_start + 3)
                 ws.cell(row=idx, column=col_start+3, value=power_w / 1000)
 
             col_start += 4
