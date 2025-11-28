@@ -131,7 +131,7 @@ def build_output_excel(sheets_dict):
                                end_column=col_start)
                 
                 # Set the UTC Offset value to the DATE STRING and center alignment
-                utc_cell = ws.cell(row=merge_start_row, column=col_start, value=date_str) # Changed value from 0 to date_str
+                utc_cell = ws.cell(row=merge_start_row, column=col_start, value=date_str)
                 utc_cell.alignment = Alignment(horizontal="center", vertical="center")
 
 
@@ -142,12 +142,12 @@ def build_output_excel(sheets_dict):
                 # Column 2: Local Time Stamp (col_start + 1)
                 ws.cell(row=idx, column=col_start+1, value=r.Time) 
                 
-                # Column 3: Active Power (W) (col_start + 2) - This value now retains its sign.
+                # Column 3: Active Power (W) (col_start + 2) - Retains sign (NO ABSOLUTE VALUE).
                 power_w = getattr(r, POWER_COL_OUT)
                 ws.cell(row=idx, column=col_start+2, value=power_w)
                 
-                # Column 4: kW (W / 1000) (col_start + 3) - This value now retains its sign.
-                ws.cell(row=idx, column=col_start+3, value=power_w / 1000)
+                # Column 4: kW (W / 1000) (col_start + 3) - Applies absolute value (ABS).
+                ws.cell(row=idx, column=col_start+3, value=abs(power_w) / 1000)
 
             col_start += 4
 
