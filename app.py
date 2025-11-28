@@ -149,6 +149,38 @@ def build_output_excel(sheets_dict):
                 # Column 4: kW (W / 1000) (col_start + 3) - Applies absolute value (ABS).
                 ws.cell(row=idx, column=col_start+3, value=abs(power_w) / 1000)
 
+            
+            # 5. Add summary statistics (Total, Average, Max)
+            if data_rows_count > 0:
+                # Calculations
+                sum_w = day_data[POWER_COL_OUT].sum()
+                mean_w = day_data[POWER_COL_OUT].mean()
+                max_w = day_data[POWER_COL_OUT].max()
+                
+                # kW stats are calculated on the absolute values, as per the kW column's logic.
+                sum_kw_abs = day_data[POWER_COL_OUT].abs().sum() / 1000
+                mean_kw_abs = day_data[POWER_COL_OUT].abs().mean() / 1000
+                max_kw_abs = day_data[POWER_COL_OUT].abs().max() / 1000
+                
+                # Determine starting row for summaries (1 row below the last data row)
+                stats_row_start = merge_end_row + 1
+                
+                # TOTAL Row
+                ws.cell(row=stats_row_start, column=col_start + 1, value="Total")
+                ws.cell(row=stats_row_start, column=col_start + 2, value=sum_w)
+                ws.cell(row=stats_row_start, column=col_start + 3, value=sum_kw_abs)
+                
+                # AVERAGE Row
+                ws.cell(row=stats_row_start + 1, column=col_start + 1, value="Average")
+                ws.cell(row=stats_row_start + 1, column=col_start + 2, value=mean_w)
+                ws.cell(row=stats_row_start + 1, column=col_start + 3, value=mean_kw_abs)
+                
+                # MAX Row
+                ws.cell(row=stats_row_start + 2, column=col_start + 1, value="Max")
+                ws.cell(row=stats_row_start + 2, column=col_start + 2, value=max_w)
+                ws.cell(row=stats_row_start + 2, column=col_start + 3, value=max_kw_abs)
+
+
             col_start += 4
 
     stream = BytesIO()
