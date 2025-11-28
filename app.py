@@ -219,10 +219,13 @@ def build_output_excel(sheets_dict):
                 # *** Added max_col for robustness ***
                 data_ref = Reference(ws, min_col=col_start+3, min_row=4, max_col=col_start+3, max_row=3+n_rows)
                 
-                # Title Reference: Points to the unmerged cell (Row 3, Col col_start+3) which contains the short date.
-                title_ref = Reference(ws, min_col=col_start+3, min_row=3, max_col=col_start+3, max_row=3)
-                
-                chart.add_data(data_ref, title_from_data=title_ref)
+                # Retrieve the title directly from the sheet cell (Row 3, Col col_start+3)
+                date_title = ws.cell(row=3, column=col_start+3).value
+
+                # FIX: title_from_data parameter must be a boolean (False in this case)
+                # We add the data series and then set the title explicitly.
+                chart.add_data(data_ref, titles_from_data=False)
+                chart.series[-1].title = date_title
                 
                 col_start += 4
 
