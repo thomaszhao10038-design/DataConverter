@@ -115,6 +115,8 @@ def build_output_excel(sheets_dict):
             ws.cell(row=1, column=col_start).alignment = Alignment(horizontal="center", vertical="center")
 
             # 2. Sub-headers (Row 2)
+            # NOTE: The header remains "UTC Offset (minutes)" as requested by the output format,
+            # but the content below it will show the date string.
             ws.cell(row=2, column=col_start, value="UTC Offset (minutes)")
             ws.cell(row=2, column=col_start+1, value="Local Time Stamp")
             ws.cell(row=2, column=col_start+2, value="Active Power (W)")
@@ -128,8 +130,8 @@ def build_output_excel(sheets_dict):
                                end_row=merge_end_row, 
                                end_column=col_start)
                 
-                # Set the UTC Offset value (0) and center alignment once in the merged block
-                utc_cell = ws.cell(row=merge_start_row, column=col_start, value=0)
+                # Set the UTC Offset value to the DATE STRING and center alignment
+                utc_cell = ws.cell(row=merge_start_row, column=col_start, value=date_str) # Changed value from 0 to date_str
                 utc_cell.alignment = Alignment(horizontal="center", vertical="center")
 
 
