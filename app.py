@@ -103,6 +103,12 @@ def process_sheet(df, timestamp_col, psum_col):
     # Rename the PSum column to a simple, guaranteed name
     df_out.columns = ['Rounded', POWER_COL_OUT] 
     
+    # --- STABILIZING CHECK FOR DATE RANGE ---
+    # Ensure the aggregated output has valid timestamps before calculating min/max
+    if df_out['Rounded'].empty or df_out['Rounded'].isna().all():
+        st.error("Aggregation produced no valid timestamps, likely due to a time range error. Cannot pad data.")
+        return pd.DataFrame()
+
     # Store the set of original valid dates to filter the final padded range
     original_dates = set(df_out['Rounded'].dt.date)
 
