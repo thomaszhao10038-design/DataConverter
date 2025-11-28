@@ -16,20 +16,22 @@ OUTPUT_HEADERS = [
 POWER_COL_OUT = 'PSumW'
 
 # -----------------------------
-# PROCESS SINGLE SHEET (IMPROVED PADDING & AGGREGATION)
+# PROCESS SINGLE SHEET (FIXED AGGREGATION AND PADDING)
 # -----------------------------
 def process_sheet(df, timestamp_col, psum_col):
     """
-    Processes a single sheet by rounding timestamps to 10-minute intervals, 
-    summing absolute power values in each interval, and ensuring all 10-minute 
-    intervals for the entire time range are present using Pandas reindexing.
+    Processes a single sheet by:
+    1. Cleaning and validating input data.
+    2. Rounding timestamps to 10-minute intervals (floor).
+    3. Summing absolute power values in each interval.
+    4. Ensuring all 10-minute intervals for the entire time range are present (padding with 0).
     """
     # 1. Cleaning and Preparation
     
     # Ensure columns are stripped of leading/trailing spaces for reliable access
     df.columns = df.columns.astype(str).str.strip()
 
-    # Convert timestamp. dayfirst=True handles DD/MM/YYYY format.
+    # Convert timestamp. dayfirst=True handles DD/MM/YYYY format based on your example file.
     df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce", dayfirst=True)
     
     # Aggressively clean and ensure Power column is numeric
@@ -42,10 +44,7 @@ def process_sheet(df, timestamp_col, psum_col):
     df[psum_col] = pd.to_numeric(power_series, errors='coerce')
     
     # Drop rows where essential data is missing/invalid
-    initial_rows = len(df)
-    
     df = df.dropna(subset=[timestamp_col, psum_col])
-    valid_rows = len(df)
     
     if df.empty:
         return pd.DataFrame()
@@ -67,7 +66,6 @@ def process_sheet(df, timestamp_col, psum_col):
     
     # Convert the aggregated Series back to a DataFrame
     df_out = resampled_data.reset_index()
-    # Rename the PSum column to a simple, guaranteed name
     df_out.columns = ['Rounded', POWER_COL_OUT] 
     
     # 3. Robust Padding (Ensuring all 10-min slots for all days are present)
@@ -75,7 +73,10 @@ def process_sheet(df, timestamp_col, psum_col):
     if df_out.empty or df_out['Rounded'].isna().all():
         return pd.DataFrame()
     
-    # FIX: Use floor('D') and ceil('D') for robust date range calculation
+    # Store the set of original valid dates to filter the final padded range
+    original_dates = set(df_out['Rounded'].dt.date)
+
+    # Use floor('D') and ceil('D') for robust date range calculation
     # Start of the first day (e.g., 2025-11-11 00:00:00)
     min_dt = df_out['Rounded'].min().floor('D')
     # Start of the day *after* the last day (e.g., 2025-11-27 00:00:00)
@@ -86,7 +87,7 @@ def process_sheet(df, timestamp_col, psum_col):
         start=min_dt, 
         end=max_dt_exclusive,
         freq='10min',
-        closed='left' # Ensures the end time (e.g., 00:00 of the next day) is excluded
+        closed='left' # Excludes the 00:00:00 of the final day + 1
     )
 
     # Re-index the resampled data onto the full time index, filling missing intervals with 0
@@ -99,11 +100,9 @@ def process_sheet(df, timestamp_col, psum_col):
     
     # 4. Final Formatting
     
-    # Store the set of original valid dates to filter the final padded range
-    original_dates = set(df_out['Rounded'].dt.date)
-
     # Extract date and time columns from the final padded (and now complete) time series
     grouped["Date"] = grouped["Rounded"].dt.date
+    # Format time as HH:MM to match the Excel output requirement "Local Time Stamp"
     grouped["Time"] = grouped["Rounded"].dt.strftime("%H:%M") 
 
     # Filter the result to only include dates that were present in the original data.
@@ -172,9 +171,9 @@ def build_output_excel(sheets_dict):
 def app():
     st.title("📊 Excel 10-Minute Electricity Data Converter")
     st.markdown("""
-        Upload an Excel file (.xlsx) with time-series data. Each sheet is processed 
+        Upload an **Excel file (.xlsx)** with time-series data. Each sheet is processed 
         separately to calculate the total absolute power (W) consumed/generated 
-        in fixed 10-minute intervals. The output is a wide format file suitable for analysis.
+        in fixed **10-minute intervals**.
         """)
 
     uploaded = st.file_uploader("Upload .xlsx file", type=["xlsx"])
@@ -184,7 +183,7 @@ def app():
         result_sheets = {}
 
         for sheet_name in xls.sheet_names:
-            st.info(f"Preparing to process sheet: **{sheet_name}**")
+            st.info(f"Processing sheet: **{sheet_name}**")
             try:
                 # Use Pandas to read the sheet
                 df = pd.read_excel(uploaded, sheet_name=sheet_name)
@@ -200,7 +199,7 @@ def app():
             timestamp_col = next((col for col in df.columns if col in possible_time_cols), None)
             
             if timestamp_col is None:
-                st.error(f"No valid timestamp column found in sheet **{sheet_name}**. (Tried: {', '.join(possible_time_cols)})")
+                st.error(f"No valid **Timestamp** column found in sheet **{sheet_name}**.")
                 continue
 
             # Auto-detect PSum column
@@ -208,21 +207,22 @@ def app():
             psum_col = next((col for col in df.columns if col in possible_psum_cols), None)
             
             if psum_col is None:
-                st.error(f"No valid PSum column found in sheet **{sheet_name}**. (Tried: {', '.join(possible_psum_cols)})")
+                st.error(f"No valid **PSum** column found in sheet **{sheet_name}**.")
                 continue
 
+            # Process the sheet
             processed = process_sheet(df, timestamp_col, psum_col)
             
             if not processed.empty:
                 result_sheets[sheet_name] = processed
-                # st.success(f"Sheet **{sheet_name}** processed successfully and contains {len(processed['Date'].unique())} days of data.")
+                st.success(f"Sheet **{sheet_name}** processed successfully and contains **{len(processed['Date'].unique())}** days of data.")
             else:
                 st.warning(f"Sheet **{sheet_name}** contained no usable data after cleaning.")
 
 
         if result_sheets:
             output_stream = build_output_excel(result_sheets)
-            st.success(f"All valid sheets ({len(result_sheets)}) converted to wide format.")
+            st.success(f"Conversion complete for {len(result_sheets)} sheet(s).")
             st.download_button(
                 label="📥 Download Converted Excel",
                 data=output_stream,
