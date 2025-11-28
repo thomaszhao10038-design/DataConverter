@@ -133,8 +133,7 @@ def build_output_excel(sheets_dict):
         # Structure:
         # Row 1: Merged Date Header (Full Date)
         # Row 2: Sub-headers (Time, W, kW)
-        # Row 3: Series Title (Short Date) - Unmerged
-        # Row 4: Start of data (Time, W, kW)
+        # Row 3: Start of data (Time, W, kW) - (Previous Row 3 removed)
 
         for date in dates:
             # Get all data for the day (including NaNs for missing periods)
@@ -146,7 +145,7 @@ def build_output_excel(sheets_dict):
             n_rows = len(day_data_full) # Use full count for row structure
             day_intervals.append(n_rows)
             
-            data_start_row = 4 # Data starts at Row 4
+            data_start_row = 3 # Data starts at Row 3 (shifted up from 4)
             merge_start = data_start_row
             merge_end = merge_start + n_rows - 1
 
@@ -163,14 +162,13 @@ def build_output_excel(sheets_dict):
             ws.cell(row=2, column=col_start+2, value="Active Power (W)")
             ws.cell(row=2, column=col_start+3, value="kW")
 
-            # Row 3 (Used for chart series title reference)
-            ws.cell(row=3, column=col_start+3, value=date_str_short)
+            # Row 3 Removed (Date string previously here is removed)
 
-            # Merge UTC column (Starts at row 4)
+            # Merge UTC column (Starts at row 3 now)
             ws.merge_cells(start_row=merge_start, start_column=col_start, end_row=merge_end, end_column=col_start)
             ws.cell(row=merge_start, column=col_start, value=date_str_full).alignment = Alignment(horizontal="center", vertical="center")
 
-            # Fill data (starts at row 4)
+            # Fill data (starts at row 3)
             for idx, r in enumerate(day_data_full.itertuples(), start=merge_start):
                 ws.cell(row=idx, column=col_start+1, value=r.Time)
                 ws.cell(row=idx, column=col_start+2, value=getattr(r, POWER_COL_OUT)) 
@@ -211,19 +209,25 @@ def build_output_excel(sheets_dict):
             chart.title = f"Daily 10-Minute Absolute Power Profile - {sheet_name}"
             chart.y_axis.title = "kW"
             chart.x_axis.title = "Time"
+            
+            # --- UPDATE: Set Chart Size ---
+            chart.height = 12.5 # default is 7.5
+            chart.width = 23    # default is 15
 
             max_rows = max(day_intervals)
             first_time_col = 2
-            categories_ref = Reference(ws, min_col=first_time_col, min_row=4, max_row=3 + max_rows)
+            # Categories ref: starts at row 3 (was 4), ends at 2+max_rows (was 3+max_rows)
+            categories_ref = Reference(ws, min_col=first_time_col, min_row=3, max_row=2 + max_rows)
 
             col_start = 1
             for i, n_rows in enumerate(day_intervals):
-                data_ref = Reference(ws, min_col=col_start+3, min_row=4, max_col=col_start+3, max_row=3+n_rows)
+                # Data ref: starts at row 3 (was 4), ends at 2+n_rows (was 3+n_rows)
+                data_ref = Reference(ws, min_col=col_start+3, min_row=3, max_col=col_start+3, max_row=2+n_rows)
                 
-                # Get series name as string
-                date_title_str = ws.cell(row=3, column=col_start+3).value
+                # Get series name from dates list using index
+                date_title_str = dates[i].strftime('%d-%b')
                 
-                # Use Series object directly to avoid TypeError with chart.series[-1].title
+                # Use Series object directly
                 s = Series(values=data_ref, title=date_title_str)
                 chart.series.append(s)
                 
@@ -267,7 +271,6 @@ def build_output_excel(sheets_dict):
             cell.fill = header_fill
             cell.alignment = Alignment(horizontal="center")
             cell.border = thin_border
-            # Set rough column width using get_column_letter for >26 columns support
             ws_total.column_dimensions[get_column_letter(col_idx)].width = 20
 
         # Write Data
@@ -284,7 +287,6 @@ def build_output_excel(sheets_dict):
             # Sheet Columns
             for col_idx, sheet_name in enumerate(sheet_names_list, 2):
                 val = total_sheet_data[date_obj].get(sheet_name, 0)
-                # If val is NaN or None, treat as 0
                 if pd.isna(val): val = 0
                 
                 cell = ws_total.cell(row=row_idx, column=col_idx, value=val)
@@ -305,13 +307,15 @@ def build_output_excel(sheets_dict):
             chart_total.y_axis.title = "Max Power (kW)"
             chart_total.x_axis.title = "Date"
             
+            # --- UPDATE: Set Chart Size ---
+            chart_total.height = 15
+            chart_total.width = 30
+            
             # Data References: Columns 2 to N+1 (Sheet Columns)
-            # Rows: 1 (Header) to len(sorted_dates) + 1
             data_min_col = 2
             data_max_col = len(sheet_names_list) + 1
             data_max_row = len(sorted_dates) + 1
             
-            # We add data column by column to create series for each sheet
             for i, sheet_name in enumerate(sheet_names_list):
                 col = 2 + i
                 data_ref = Reference(ws_total, min_col=col, min_row=1, max_col=col, max_row=data_max_row)
@@ -321,11 +325,9 @@ def build_output_excel(sheets_dict):
             cats_ref = Reference(ws_total, min_col=1, min_row=2, max_row=data_max_row)
             chart_total.set_categories(cats_ref)
             
-            # Position the chart
             ws_total.add_chart(chart_total, "B" + str(data_max_row + 3))
 
     stream = BytesIO()
-    # Remove the default empty sheet created automatically if it's still there
     if 'Sheet' in wb.sheetnames and len(wb.sheetnames) > len(sheets_dict) + (1 if total_sheet_data else 0):
         wb.remove(wb['Sheet'])
         
