@@ -5,7 +5,6 @@ from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Alignment
 
-
 # -----------------------------
 # ROUND TIMESTAMP TO 10 MIN
 # -----------------------------
@@ -29,12 +28,10 @@ def round_to_10min(ts):
 
     return ts.replace(second=0, microsecond=0)
 
-
 # -----------------------------
 # PROCESS SINGLE SHEET
 # -----------------------------
-def process_sheet(df, timestamp_col="Timestamp", psum_col="PSum (W)"):
-
+def process_sheet(df, timestamp_col, psum_col):
     df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce")
     df["Rounded"] = df[timestamp_col].apply(round_to_10min)
 
@@ -44,9 +41,7 @@ def process_sheet(df, timestamp_col="Timestamp", psum_col="PSum (W)"):
 
     # Group by bucket
     grouped = df.groupby(["Date", "Time"])[psum_col].sum().reset_index()
-
     return grouped
-
 
 # -----------------------------
 # BUILD EXCEL FORMAT
@@ -77,7 +72,6 @@ def build_output_excel(sheets_dict):
 
             # Extract this day's data
             day_data = df[df["Date"] == date].copy()
-            # sort by time
             day_data = day_data.sort_values("Time")
 
             row_ptr = 3
@@ -85,17 +79,20 @@ def build_output_excel(sheets_dict):
                 ws.cell(row=row_ptr, column=col_start, value=str(date))
                 ws.cell(row=row_ptr, column=col_start+1, value=r["Time"])
                 ws.cell(row=row_ptr, column=col_start+2, value=r["PSum (W)"])
-                ws.cell(row=row_ptr, column=col_start+3, value=(r["PSum (W)"])/1000 if pd.notna(r["PSum (W)"]) else None)
+                ws.cell(
+                    row=row_ptr,
+                    column=col_start+3,
+                    value=(r["PSum (W)"])/1000 if pd.notna(r["PSum (W)"]) else None
+                )
                 row_ptr += 1
 
-            col_start += 4  # shift to next 4-column block
+            col_start += 4  # next 4-column block
 
     # Save to bytes
     stream = BytesIO()
     wb.save(stream)
     stream.seek(0)
     return stream
-
 
 # -----------------------------
 # STREAMLIT UI
@@ -111,19 +108,46 @@ if uploaded:
 
     for sheet_name in xls.sheet_names:
         st.write(f"Processing sheet: **{sheet_name}**")
-
         df = pd.read_excel(uploaded, sheet_name=sheet_name)
 
-        # auto-detect columns
-        timestamp_col = "Timestamp"
-        psum_col = "PSum (W)"
-
-        if timestamp_col not in df.columns:
-            st.error(f"❌ Column '{timestamp_col}' not found in {sheet_name}")
+        # -----------------------------
+        # AUTO-DETECT TIMESTAMP COLUMN
+        # -----------------------------
+        possible_time_cols = [
+            "Date & Time", "Date&Time", "Date_Time",
+            "Timestamp", "TimeStamp", "DateTime", "Date Time",
+            "LocalTime", "Local Time", "TIME", "time", "datetime",
+            "Date", "date", "ts"
+        ]
+        timestamp_col = None
+        for col in df.columns:
+            if col.strip() in possible_time_cols:
+                timestamp_col = col
+                break
+        if timestamp_col is None:
+            st.error(
+                f"❌ No valid timestamp column found in sheet **{sheet_name}**.\n"
+                f"Available columns:\n{list(df.columns)}"
+            )
             continue
 
-        if psum_col not in df.columns:
-            st.error(f"❌ Column '{psum_col}' not found in {sheet_name}")
+        # -----------------------------
+        # AUTO-DETECT PSUM COLUMN
+        # -----------------------------
+        possible_psum_cols = [
+            "PSum (W)", "Psum (W)", "psum", "PSum", "Psum",
+            "Power", "Active Power", "ActivePower", "P (W)"
+        ]
+        psum_col = None
+        for col in df.columns:
+            if col.strip() in possible_psum_cols:
+                psum_col = col
+                break
+        if psum_col is None:
+            st.error(
+                f"❌ No valid power column found in sheet **{sheet_name}**.\n"
+                f"Available columns:\n{list(df.columns)}"
+            )
             continue
 
         processed = process_sheet(df, timestamp_col, psum_col)
