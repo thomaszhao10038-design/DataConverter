@@ -122,6 +122,11 @@ def build_output_excel(sheets_dict):
         daily_max_summary = []
 
         day_intervals = []
+        
+        # We start the data rows at 3 (or merge_start)
+        # Row 1 will be the Date Merge header
+        # Row 2 will be the sub-headers (Local Time Stamp, Active Power, kW)
+        # Row 3 will be used for the chart series name reference, placed in a non-merged cell
 
         for date in dates:
             # Get all data for the day (including NaNs for missing periods)
@@ -133,27 +138,34 @@ def build_output_excel(sheets_dict):
             
             n_rows = len(day_data_full) # Use full count for row structure
             day_intervals.append(n_rows)
-            merge_start = 3
+            # Data starts at Row 3.
+            data_start_row = 3
+            merge_start = data_start_row + 1 # UTC column merge starts one row lower
             merge_end = merge_start + n_rows - 1
 
             date_str_full = date.strftime('%Y-%m-%d')
             date_str_short = date.strftime('%d-%b')
 
-            # Merge date header
+            # Row 1: Merge date header (Long Date)
             ws.merge_cells(start_row=1, start_column=col_start, end_row=1, end_column=col_start+3)
             ws.cell(row=1, column=col_start, value=date_str_full).alignment = Alignment(horizontal="center")
-
-            # Sub-headers
+            
+            # Row 2: Sub-headers
             ws.cell(row=2, column=col_start, value="UTC Offset (minutes)")
             ws.cell(row=2, column=col_start+1, value="Local Time Stamp")
             ws.cell(row=2, column=col_start+2, value="Active Power (W)")
             ws.cell(row=2, column=col_start+3, value="kW")
 
-            # Merge UTC column
+            # Row 3 (Used for chart series title reference)
+            # Place the short date string in an unmerged cell above the data.
+            # We'll use the cell above the kW column (Row 3, Col col_start+3)
+            ws.cell(row=3, column=col_start+3, value=date_str_short)
+
+            # Merge UTC column (Starts at row 4)
             ws.merge_cells(start_row=merge_start, start_column=col_start, end_row=merge_end, end_column=col_start)
             ws.cell(row=merge_start, column=col_start, value=date_str_full).alignment = Alignment(horizontal="center", vertical="center")
 
-            # Fill data (using day_data_full to include NaNs)
+            # Fill data (starts at row 4, which is index 0 in itertuples() + merge_start)
             for idx, r in enumerate(day_data_full.itertuples(), start=merge_start):
                 # .itertuples() preserves NaN, which openpyxl writes as blank
                 ws.cell(row=idx, column=col_start+1, value=r.Time)
@@ -162,7 +174,7 @@ def build_output_excel(sheets_dict):
                 # kW column
                 ws.cell(row=idx, column=col_start+3, value=r.kW)
 
-            # Summary stats (using day_data_active to exclude NaNs)
+            # Summary stats
             stats_row_start = merge_end + 1
             sum_w = day_data_active[POWER_COL_OUT].sum()
             mean_w = day_data_active[POWER_COL_OUT].mean()
@@ -182,7 +194,6 @@ def build_output_excel(sheets_dict):
             ws.cell(row=stats_row_start+2, column=col_start+3, value=max_kw)
 
             max_row_used = max(max_row_used, stats_row_start+2)
-            # Reverting this to use the short date string as per the original code's intent for the summary table
             daily_max_summary.append((date_str_short, max_kw)) 
 
             col_start += 4
@@ -197,16 +208,16 @@ def build_output_excel(sheets_dict):
             max_rows = max(day_intervals)
             # Find the starting column for the first date's time stamps
             first_time_col = 2
-            categories_ref = Reference(ws, min_col=first_time_col, min_row=3, max_row=2+max_rows)
+            # Categories start from row 4 (Local Time Stamp)
+            categories_ref = Reference(ws, min_col=first_time_col, min_row=4, max_row=merge_end)
 
             col_start = 1
             for i, n_rows in enumerate(day_intervals):
-                # Data Reference (kW column)
-                data_ref = Reference(ws, min_col=col_start+3, min_row=3, max_row=2+n_rows)
+                # Data Reference (kW column, starts at Row 4)
+                data_ref = Reference(ws, min_col=col_start+3, min_row=4, max_row=3+n_rows)
                 
-                # Title Reference: This refers to the merged date header in Row 1, Column col_start
-                # *** FIX: Explicitly setting max_col and max_row to define the title_ref as a single cell ***
-                title_ref = Reference(ws, min_col=col_start, min_row=1, max_col=col_start, max_row=1)
+                # Title Reference: Points to the unmerged cell (Row 3, Col col_start+3) which contains the short date.
+                title_ref = Reference(ws, min_col=col_start+3, min_row=3, max_col=col_start+3, max_row=3)
                 
                 chart.add_data(data_ref, title_from_data=title_ref)
                 
