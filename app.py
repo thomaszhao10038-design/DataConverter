@@ -92,8 +92,7 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         
         # --- Prepare for Padding and Final Output Columns ---
         
-        # FIX APPLIED: Extract the time component (datetime.time) from the DatetimeIndex directly 
-        # and set it as the new index for joining with the template. This avoids the strftime error.
+        # Extract the time component (datetime.time) from the DatetimeIndex and set it as the new index
         daily_output.index = daily_output.index.time
         
         # Re-index against the full 144-row template to fill missing intervals with NaN
@@ -101,7 +100,11 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         
         # Calculate derived metrics and set the required output columns
         final_daily_output['UTC Offset (minutes)'] = date.strftime('%Y-%m-%d')
-        final_daily_output['Local Time Stamp'] = final_daily_output.index.strftime('%H:%M')
+        
+        # FIX APPLIED: Use a list comprehension to call strftime on each element 
+        # of the Index to correctly generate the time stamps.
+        final_daily_output['Local Time Stamp'] = [t.strftime('%H:%M') for t in final_daily_output.index]
+
         final_daily_output['kW'] = final_daily_output['Active Power (W)'].abs() / 1000
         
         # Final column selection and naming convention
