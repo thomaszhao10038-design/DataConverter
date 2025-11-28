@@ -1,285 +1,199 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
 import io
-import datetime
 
-# --- Configuration ---
-# Define the expected input column names in the source Excel file
-TIMESTAMP_COL = 'Date & Time' 
-POWER_COL_IN = 'PSum (W)'
+st.set_page_config(page_title="Power Data Converter", layout="wide")
+st.title("📊 Power Data to Daily 4-Column Excel Converter")
+st.markdown("""
+Upload one or more `.xlsx` files.  
+Each sheet will be processed independently and returned in a single output file with:
+- 4 columns per day (starting from column A, E, I, ...)
+- Merged date headers for same days
+- 10-minute intervals (00:00 → 23:50)
+- Active Power (W) = sum of instantaneous PSum (W) in that 10-min bin
+- kW column = Active Power (W) / 1000
+""")
 
-# Define the output header columns that repeat for each day (4 columns total)
-OUTPUT_HEADERS = [
-    'UTC Offset (minutes)', 
-    'Local Time Stamp', 
-    'Active Power (W)', 
-    'kW'
-]
+uploaded_files = st.file_uploader(
+    "Upload Excel files (.xlsx)", type=["xlsx"], accept_multiple_files=True
+)
 
-def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
-    """
-    Transforms a single input sheet (DataFrame) into the required wide-format 
-    structure (4 columns per day), enforcing fixed 10-minute intervals and 
-    aggregating power data.
+if not uploaded_files:
+    st.info("Please upload at least one Excel file.")
+    st.stop()
 
-    Args:
-        df: The input DataFrame containing time series data.
-        sheet_name: The name of the original sheet.
+@st.cache_data
+def process_file(file):
+    xls = pd.ExcelFile(file)
+    output_sheets = {}
 
-    Returns:
-        A new DataFrame in the required wide format, or an empty DataFrame if processing fails.
-    """
-    st.info(f"Processing sheet: **{sheet_name}**...")
-    
-    # CRITICAL FIX: Clean column names by stripping whitespace to ensure reliable matching
-    df.columns = df.columns.astype(str).str.strip()
+    for sheet_name in xls.sheet_names:
+        df = pd.read_excel(xls, sheet_name=sheet_name)
 
-    # 1. Input Validation and Preparation
-    required_cols = [TIMESTAMP_COL, POWER_COL_IN]
-    if not all(col in df.columns for col in required_cols):
-        found_cols = df.columns.tolist()
-        st.error(f"Sheet **{sheet_name}** is missing required columns. Expected: '{TIMESTAMP_COL}' and '{POWER_COL_IN}'. Found: {found_cols}")
-        return pd.DataFrame()
-
-    try:
-        # Convert the timestamp column to datetime objects, handling D/M/Y ambiguity
-        df[TIMESTAMP_COL] = pd.to_datetime(
-            df[TIMESTAMP_COL],
-            format='mixed', 
-            dayfirst=True
-        )
-    except Exception as e:
-        st.error(f"Error converting column '{TIMESTAMP_COL}' to datetime in sheet {sheet_name}. Error: {e}")
-        return pd.DataFrame()
-
-    # Drop rows where timestamp conversion failed (resulted in NaT)
-    df = df.dropna(subset=[TIMESTAMP_COL]).sort_values(by=TIMESTAMP_COL).reset_index(drop=True)
-    
-    # CRITICAL FIX: Aggressively clean and ensure Power column is numeric before aggregation.
-    
-    # 1. Convert to string, strip whitespace.
-    power_series = df[POWER_COL_IN].astype(str).str.strip()
-    
-    # 2. Replace commas with periods to handle international decimal format.
-    power_series = power_series.str.replace(',', '.', regex=False)
-    
-    # 3. AGGRESSIVE CLEANING: Remove everything that is NOT a digit, a period, or a minus sign.
-    power_series = power_series.str.replace(r'[^0-9\.\-]', '', regex=True)
-
-    # 4. Coerce non-numeric values to NaN.
-    df[POWER_COL_IN] = pd.to_numeric(power_series, errors='coerce')
-    
-    # 5. Drop rows where power value is invalid (NaN)
-    df = df.dropna(subset=[POWER_COL_IN])
-
-    # Diagnostic Check: If the aggressive cleanup failed for all rows, inform the user.
-    if df.empty:
-        st.error(f"Sheet **{sheet_name}**: After cleaning and ensuring numeric power values, the DataFrame is empty. This suggests all power values in the '{POWER_COL_IN}' column were non-numeric or malformed. Please verify the raw data.")
-        return pd.DataFrame()
-    
-    # FIX: Take the absolute magnitude of instantaneous power (PSum (W)) readings.
-    # This ensures that both consumption (positive) and generation/export (negative) readings 
-    # contribute to the aggregation, preventing them from cancelling each other out.
-    df[POWER_COL_IN] = df[POWER_COL_IN].abs()
-
-    # Set the valid timestamp column as the index for resampling
-    df_indexed = df.set_index(TIMESTAMP_COL)
-
-    # 2. Resample data into fixed 10-minute intervals (144 intervals per day)
-    
-    transformed_data = []
-    
-    # Find all unique dates to iterate over. .index.normalize() gets the date component.
-    all_dates = df_indexed.index.normalize().unique().date
-    all_dates = pd.Series(all_dates).dropna().unique()
-
-    # Create a template index for a full 24-hour day (144 points)
-    # This is crucial for consistent horizontal alignment. Use datetime.time objects for index.
-    time_only_index = pd.to_datetime([f'{i:02d}:{j:02d}' for i in range(24) for j in range(0, 60, 10)], format='%H:%M').time
-    template_df = pd.DataFrame(index=time_only_index)
-
-    for date in all_dates:
-        # Define the start and end of the current day for clean slicing
-        day_start = pd.Timestamp(date)
-        day_end = day_start + pd.Timedelta(days=1)
-        # Select data for the current day
-        day_group = df_indexed.loc[day_start:day_end - pd.Timedelta(seconds=1)]
-
-        if day_group.empty:
+        # === Expected columns (adjust if your column names differ slightly) ===
+        if "PSum (W)" not in df.columns:
+            st.error(f"Sheet '{sheet_name}' in {file.name} does not have 'PSum (W)' column.")
             continue
 
-        # CRITICAL CHANGE: Using .sum() as requested ("total instantaneous power used")
-        # The absolute value of PSum (W) is taken earlier to prevent cancellation.
-        # This calculates the SUM of the instantaneous power magnitude over the 10-minute interval.
-        resampled_series = day_group[POWER_COL_IN].resample(
-            '10min', 
-            label='left', 
-            origin='start'
-        ).sum()
+        # Try to find timestamp column (common names)
+        time_col = None
+        for col in ["Local Time Stamp", "Time", "Timestamp", "DateTime", "LocalTime"]:
+            if col in df.columns:
+                time_col = col
+                break
+        if time_col is None:
+            st.error(f"Could not find timestamp column in sheet '{sheet_name}'")
+            continue
 
-        # Create the daily output DataFrame using the resampled data
-        daily_output = pd.DataFrame({
-            'Active Power (W)': resampled_series.values,
-        }, index=resampled_series.index)
-        
-        # --- Prepare for Padding and Final Output Columns ---
-        
-        # Extract the time component (datetime.time) from the DatetimeIndex and set it as the new index
-        daily_output.index = daily_output.index.time
-        
-        # Re-index against the full 144-row template to fill missing intervals with NaN
-        final_daily_output = template_df.join(daily_output, how='left')
-        
-        # FIX: Replace NaN values (periods with no readings) with 0.
-        final_daily_output['Active Power (W)'] = final_daily_output['Active Power (W)'].fillna(0)
-        
-        # Calculate derived metrics and set the required output columns
-        final_daily_output['UTC Offset (minutes)'] = date.strftime('%Y-%m-%d')
-        
-        # Use a list comprehension to call strftime on each element 
-        # of the Index to correctly generate the time stamps.
-        final_daily_output['Local Time Stamp'] = [t.strftime('%H:%M') for t in final_daily_output.index]
+        df[time_col] = pd.to_datetime(df[time_col], errors='coerce')
+        df = df.dropna(subset=[time_col])  # remove invalid timestamps
 
-        # The kW calculation is the absolute Active Power (W) sum divided by 1000.
-        # Since Active Power (W) is already calculated from absolute input, we just divide.
-        final_daily_output['kW'] = final_daily_output['Active Power (W)'] / 1000
-        
-        # Final column selection and naming convention
-        final_daily_output = final_daily_output[['UTC Offset (minutes)', 'Local Time Stamp', 'Active Power (W)', 'kW']]
-        final_daily_output.columns = OUTPUT_HEADERS 
-        
-        transformed_data.append(final_daily_output.reset_index(drop=True))
+        # Extract UTC offset if available (optional)
+        utc_offset_col = None
+        for col in ["UTC Offset", "UTC Offset (minutes)", "Offset"]:
+            if col in df.columns:
+                utc_offset_col = col
+                break
 
-    if not transformed_data:
-        st.warning(f"Sheet **{sheet_name}** contained no valid time series data after processing.")
-        return pd.DataFrame()
+        # Create 10-minute bins
+        df["bin_start"] = df[time_col].dt.floor('10min')
 
-    # Concatenate all daily blocks horizontally
-    final_df = pd.concat(transformed_data, axis=1)
+        # Group by date and 10-min bin
+        grouped = df.groupby([
+            df["bin_start"].dt.date,
+            df["bin_start"].dt.time
+        ])["PSum (W)"].sum().reset_index()
+        grouped.rename(columns={"bin_start": "time"}, inplace=True)
 
-    st.success(f"Sheet **{sheet_name}** processed successfully. Found {len(transformed_data)} days of data.")
-    return final_df
+        # Create full 10-min grid for each day present
+        dates = sorted(grouped["date"].unique())
+        all_times = [datetime(2000,1,1, h, m) for h in range(24) for m in (0,10,20,30,40,50)]
+        time_labels = [t.strftime("%H:%M") for t in all_times]
 
-def app():
-    """Main Streamlit application function."""
-    st.set_page_config(page_title="Energy Data Converter", layout="wide")
-    
-    st.title("💡 Energy Data Wide-Format Converter")
-    st.markdown("""
-        Upload an Excel file (.xlsx) containing time-series energy data. 
-        
-        **Expected Input Columns:**
-        1.  `Date & Time` (or equivalent column containing date and time information)
-        2.  `PSum (W)` (Active Power data)
-        
-        The program will convert the data into a wide format where each day's data 
-        occupies a repeating block of 4 columns, and the date column will be merged 
-        for a cleaner presentation.
-        """)
+        final_data = []
+        date_objects = []
 
-    uploaded_file = st.file_uploader(
-        "Choose an Excel file (.xlsx)", 
-        type=["xlsx"],
-        help="The file can contain multiple sheets, which will be processed independently."
-    )
+        for date in dates:
+            day_data = grouped[grouped["date"] == date]
+            power_dict = dict(zip(zip(day_data["date"], day_data["time"]), day_data["PSum (W)"]))
 
-    if uploaded_file is not None:
-        try:
-            xls = pd.ExcelFile(uploaded_file)
-            sheet_names = xls.sheet_names
-            
-            output_buffer = io.BytesIO()
-            all_processed_successfully = True
-            
-            # Use Pandas ExcelWriter with xlsxwriter engine
-            writer = pd.ExcelWriter(output_buffer, engine='xlsxwriter')
-            
-            try:
-                for sheet_name in sheet_names:
-                    try:
-                        # Parsing the sheet, relying on default header=0 (Excel row 1)
-                        df_in = xls.parse(sheet_name)
-                    except Exception as e:
-                        st.error(f"Could not read sheet '{sheet_name}'. Error: {e}")
-                        all_processed_successfully = False
-                        continue
-                        
-                    df_out = transform_sheet(df_in, sheet_name)
-                    
-                    if df_out is not None and not df_out.empty:
-                        # 1. Write the processed DataFrame to a new sheet
-                        # Do not write the index. Header is required (first row).
-                        df_out.to_excel(
-                            writer, 
-                            sheet_name=sheet_name, 
-                            index=False,
-                            header=True
+            row_power = []
+            for t in all_times:
+                key = (date, t.time())
+                row_power.append(power_dict.get(key, None))
+
+            final_data.append(row_power)
+            date_objects.append(date)
+
+        # Build output DataFrame for this sheet
+        columns_per_day = 4
+        total_days = len(dates)
+        total_cols = total_days * columns_per_day
+
+        # Create multi-level columns
+        arrays = []
+        for i, date in enumerate(dates):
+            dt = pd.to_datetime(date)
+            date_str = dt.strftime("%Y-%m-%d")
+            arrays.append([date_str, date_str, date_str, date_str])
+
+        arrays.append(["UTC Offset (minutes)", "Local Time Stamp", "Active Power (W)", "kW"])
+
+        tuples = list(zip(*arrays)) if total_days > 0 else []
+        multi_cols = pd.MultiIndex.from_tuples(tuples)
+
+        # Output DataFrame
+        out_df = pd.DataFrame(index=range(len(time_labels)), columns=multi_cols)
+
+        # Fill time labels and data
+        for i, time_label in enumerate(time_labels):
+            out_df.loc[i, (slice(None), "Local Time Stamp")] = time_label
+
+        for day_idx, date in enumerate(dates):
+            base_col = day_idx * 4
+            power_col = out_df.columns[base_col + 2]   # Active Power (W)
+            kw_col = out_df.columns[base_col + 3]      # kW
+
+            for row_idx, power in enumerate(final_data[day_idx]):
+                if power is not None and pd.notna(power):
+                    out_df.iat[row_idx, power_col[0]*4 + power_col[1]] = int(power) if power == int(power) else power
+                    out_df.iat[row_idx, kw_col[0]*4 + kw_col[1]] = round(power / 1000, 3)
+
+            # Fill UTC Offset if we have it
+            if utc_offset_col is not None:
+                offset_val = df[utc_offset_col].iloc[0] if len(df[utc_offset_col].dropna()) > 0 else ""
+                offset_col = out_df.columns[base_col]
+                out_df[offset_col] = offset_val
+
+        # Reorder columns properly (pandas sometimes messes order)
+        ordered_cols = []
+        for i in range(total_days):
+            start = i * 4
+            ordered_cols.extend(out_df.columns[start:start+4])
+        out_df = out_df[ordered_cols]
+
+        output_sheets[sheet_name] = out_df
+
+    return output_sheets
+
+if st.button("🚀 Process All Files"):
+    with st.spinner("Processing files..."):
+        all_sheets = {}
+        for file in uploaded_files:
+            sheets = process_file(file)
+            for name, df in sheets.items():
+                new_name = f"{file.name}_{name}"
+                all_sheets[new_name] = df
+
+        if not all_sheets:
+            st.error("No valid data was processed.")
+            st.stop()
+
+        # Write to Excel with merged headers
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            for sheet_name, df in all_sheets.items():
+                df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
+
+                workbook = writer.book
+                worksheet = writer.sheets[sheet_name[:31]]
+
+                # Merge cells for same date headers
+                col_idx = 0
+                while col_idx < len(df.columns):
+                    date_group_start = col_idx
+                    current_date = df.columns[col_idx][0]
+
+                    while col_idx < len(df.columns) and df.columns[col_idx][0] == current_date:
+                        col_idx += 1
+
+                    if (col_idx - date_group_start) > 1:
+                        worksheet.merge_range(
+                            0, date_group_start, 0, col_idx - 1,
+                            current_date,
+                            workbook.add_format({'align': 'center', 'bold': True, 'bg_color': '#D9E1F2'})
                         )
-                        
-                        # 2. Apply Excel Formatting (Cell Merging for Date Column)
-                        workbook = writer.book
-                        worksheet = writer.sheets[sheet_name]
-                        
-                        # Define the format for the merged cell (center text)
-                        merge_format = workbook.add_format({
-                            'align': 'center', 
-                            'valign': 'vcenter'
-                        })
 
-                        num_rows = len(df_out)
-                        num_cols = len(df_out.columns)
-                        num_days = num_cols // 4
-                        
-                        for i in range(num_days):
-                            # The date column is the first in every 4-column block: 0, 4, 8, ...
-                            col_index = i * 4 
-                            
-                            # The date value is in the first data row (Excel row 1, Python index 0)
-                            # We use try/except block just in case the value is missing in the first row
-                            try:
-                                date_value = df_out.iloc[0, col_index]
-                            except IndexError:
-                                # This handles the unlikely case of a completely empty column block
-                                continue 
-                            
-                            # Merge cells for the date column from the first data row (1) 
-                            # down to the last data row (num_rows). Column indices are 0-based.
-                            # range is (row_start, col_start, row_end, col_end)
-                            worksheet.merge_range(
-                                1,                    # Start row (1st data row, after header 0)
-                                col_index,            # Start column (0, 4, 8, ...)
-                                num_rows,             # End row (last data data row index)
-                                col_index,            # End column (same as start)
-                                date_value,           # The value to display in the merged cell
-                                merge_format          # Formatting
-                            )
-                    elif df_out is None or df_out.empty:
-                        all_processed_successfully = False
+                # Format headers row 2
+                header_format = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#A6A6A6'})
+                for col_num, value in enumerate(df.columns.get_level_values(1)):
+                    worksheet.write(1, col_num, value, header_format)
 
-            except Exception as e:
-                st.error(f"An error occurred during sheet processing: {e}")
-                all_processed_successfully = False
-            
-            # CRITICAL: Explicitly close the writer to finalize the Excel file structure in the buffer
-            writer.close()
+                # Auto-fit columns
+                for i, col in enumerate(df.columns):
+                    max_len = max(
+                        df[col].astype(str).map(len).max(),
+                        len(str(col[1]))
+                    ) + 2
+                    worksheet.set_column(i, i, min(max_len, 30))
 
-            if all_processed_successfully and sheet_names:
-                st.download_button(
-                    label="Download Processed Excel File (.xlsx)",
-                    data=output_buffer.getvalue(),
-                    file_name="Converted_Energy_Data.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-                st.balloons()
-                st.info("The processed file is ready for download above!")
-            elif not sheet_names:
-                st.warning("The uploaded file appears to be empty or has no sheets.")
-            else:
-                st.error("Processing failed for one or more sheets. Please check the error messages above and ensure your input file format is correct.")
-
-        except Exception as e:
-            st.error(f"An unexpected error occurred during file processing: {e}")
-            st.exception(e)
-
-if __name__ == '__main__':
-    app()
+        output.seek(0)
+        st.success("Processing complete!")
+        st.download_button(
+            label="📥 Download Converted Excel File",
+            data=output,
+            file_name=f"Converted_Power_Data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
