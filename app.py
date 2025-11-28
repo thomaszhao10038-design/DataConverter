@@ -34,7 +34,7 @@ def process_sheet(df, timestamp_col, psum_col):
     
     df_indexed = df.set_index(timestamp_col)
     
-    # FIX: Floor the index to the nearest 10 minutes
+    # Floor the index to the nearest 10 minutes
     df_indexed.index = df_indexed.index.floor('10min')
     
     # Group by the new, rounded index and sum the power values
@@ -55,17 +55,18 @@ def process_sheet(df, timestamp_col, psum_col):
     min_dt = df_out['Rounded'].min().floor('D')
     max_dt_exclusive = df_out['Rounded'].max().ceil('D') 
     
-    # NEW GUARD: Ensure the date range is valid (start < end)
+    # Ensure the date range is valid (start < end)
     if min_dt >= max_dt_exclusive:
         return pd.DataFrame()
 
     # Create a continuous 10-minute index covering the entire data range
     full_time_index = pd.date_range(
-        # FINAL FIX: Convert to native Python datetime objects for compatibility with pd.date_range
+        # Convert to native Python datetime objects for compatibility
         start=min_dt.to_pydatetime(), 
         end=max_dt_exclusive.to_pydatetime(),
         freq='10min',
-        closed='left'
+        # FIX: Replaced 'closed' with 'inclusive' for Pandas version compatibility
+        inclusive='left' 
     )
 
     # Re-index the resampled data onto the full time index, filling missing intervals with 0
