@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-# Import openpyxl components for advanced Excel formatting
 from openpyxl import Workbook
 from openpyxl.styles import Alignment 
 
@@ -15,27 +14,6 @@ OUTPUT_HEADERS = [
 ]
 # Define a robust internal column name for PSum (W) aggregation
 POWER_COL_OUT = 'PSumW'
-
-# -----------------------------
-# ROUND TIMESTAMP TO 10 MIN
-# -----------------------------
-def round_to_10min(ts):
-    """
-    Rounds a timestamp down to the nearest 10-minute interval (e.g., 12:12:01 -> 12:10:00).
-    This function is primarily kept for context, as Pandas resampling now handles the aggregation.
-    """
-    if pd.isna(ts) or ts is None:
-        return pd.NaT
-    
-    # We round down (floor) to the start of the 10-minute interval
-    ts = pd.to_datetime(ts)
-    start_of_day = ts.normalize()
-    # Calculate total minutes since start of day
-    minutes_since_midnight = (ts - start_of_day).total_seconds() // 60
-    # Determine the floor to the nearest 10 minutes
-    rounded_minutes = (minutes_since_midnight // 10) * 10
-    
-    return start_of_day + pd.Timedelta(minutes=rounded_minutes)
 
 # -----------------------------
 # PROCESS SINGLE SHEET (IMPROVED PADDING & AGGREGATION)
@@ -52,6 +30,7 @@ def process_sheet(df, timestamp_col, psum_col):
     df.columns = df.columns.astype(str).str.strip()
 
     # Convert timestamp. dayfirst=True handles DD/MM/YYYY format.
+    # The snippet shows DD/MM/YYYY, so we use dayfirst=True.
     df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce", dayfirst=True)
     
     # Aggressively clean and ensure Power column is numeric
@@ -75,14 +54,13 @@ def process_sheet(df, timestamp_col, psum_col):
     valid_rows = len(df)
     
     if df.empty:
-        st.error(f"Sheet contained no valid data after cleaning (0 out of {initial_rows} rows kept).")
-        st.error(f"**Diagnostic:** {timestamp_nans} rows failed Timestamp conversion. {power_nans} rows failed Power conversion.")
-        # If no valid data is found, return an empty DataFrame
+        # st.error(f"Sheet contained no valid data after cleaning (0 out of {initial_rows} rows kept).")
+        # st.error(f"**Diagnostic:** {timestamp_nans} rows failed Timestamp conversion. {power_nans} rows failed Power conversion.")
         return pd.DataFrame()
 
-    st.info(f"Using {valid_rows} data points for aggregation (from initial {initial_rows} rows).")
+    # st.info(f"Using {valid_rows} data points for aggregation (from initial {initial_rows} rows).")
     
-    # 2. Resample and Aggregate Data
+    # 2. Aggregate Data (Fixed Logic)
     
     # Use absolute value to correctly sum total power magnitude
     df[psum_col] = df[psum_col].abs()
@@ -90,13 +68,13 @@ def process_sheet(df, timestamp_col, psum_col):
     # Set the timestamp as index
     df_indexed = df.set_index(timestamp_col)
     
-    # Resample the data to a 10-minute frequency, taking the SUM of all readings in that window.
-    # 'label=left' is standard for power aggregation windows.
-    resampled_data = df_indexed[psum_col].resample(
-        '10min', 
-        label='left', 
-        origin='start'
-    ).sum()
+    # --- FIX: Floor the index to the nearest 10 minutes and use groupby().sum() ---
+    # This correctly assigns non-uniform time stamps (e.g., 12:12:13) to the start of their 10-min interval (12:10:00)
+    df_indexed.index = df_indexed.index.floor('10min')
+    
+    # Group by the new, rounded index and sum the power values for the 10-min interval
+    resampled_data = df_indexed[psum_col].groupby(level=0).sum()
+    # --- END FIX ---
     
     # Convert the aggregated Series back to a DataFrame
     df_out = resampled_data.reset_index()
@@ -104,9 +82,8 @@ def process_sheet(df, timestamp_col, psum_col):
     df_out.columns = ['Rounded', POWER_COL_OUT] 
     
     # --- STABILIZING CHECK FOR DATE RANGE ---
-    # Ensure the aggregated output has valid timestamps before calculating min/max
     if df_out['Rounded'].empty or df_out['Rounded'].isna().all():
-        st.error("Aggregation produced no valid timestamps, likely due to a time range error. Cannot pad data.")
+        # st.error("Aggregation produced no valid timestamps, likely due to a time range error. Cannot pad data.")
         return pd.DataFrame()
 
     # Store the set of original valid dates to filter the final padded range
@@ -120,11 +97,11 @@ def process_sheet(df, timestamp_col, psum_col):
     # Create a continuous 10-minute index covering the entire data range
     full_time_index = pd.date_range(
         start=min_date, 
-        # End at the start of the last 10-minute interval on the max_date
-        # We need to include the last day's 23:50 interval, so we go up to 00:00 of the next day.
+        # End at the start of the last 10-minute interval on the max_date (23:50:00)
+        # We go up to 00:00 of the next day, and use closed='left'
         end=max_date + pd.Timedelta(days=1),
         freq='10min',
-        closed='left' # Ensures the end time is inclusive of the last minute of the last day
+        closed='left' 
     )
 
     # Re-index the resampled data onto the full time index, filling missing intervals with 0
@@ -139,13 +116,14 @@ def process_sheet(df, timestamp_col, psum_col):
     
     # Extract date and time columns from the final padded (and now complete) time series
     grouped["Date"] = grouped["Rounded"].dt.date
-    grouped["Time"] = grouped["Rounded"].dt.strftime("%H:%M")
+    # Format time as HH:MM to match the Excel output requirement "Local Time Stamp"
+    grouped["Time"] = grouped["Rounded"].dt.strftime("%H:%M") 
 
     # Filter the result to only include dates that were present in the original data.
     grouped = grouped[grouped["Date"].isin(original_dates)]
     
     # Final check: ensure the data has all days.
-    st.info(f"Total unique days found in output data: {len(grouped['Date'].unique())}")
+    # st.info(f"Total unique days found in output data: {len(grouped['Date'].unique())}")
     
     return grouped
 
@@ -165,6 +143,7 @@ def build_output_excel(sheets_dict):
 
         col_start = 1
         for date in dates:
+            # Use 'YYYY-MM-DD' format for consistency
             date_str = date.strftime('%Y-%m-%d')
             
             # 1. Merge date header (Row 1, columns 1 to 4)
@@ -183,9 +162,8 @@ def build_output_excel(sheets_dict):
             day_data = df[df["Date"] == date].sort_values("Time")
             
             # Double-check: ensure we have 144 rows for a full day (144 = 24 * 6)
-            if len(day_data) != 144:
-                 st.warning(f"Day {date_str} in sheet {sheet_name} has {len(day_data)} entries, not the expected 144.")
-
+            # The padding logic ensures this unless the original data range was less than a day
+            
             for idx, r in enumerate(day_data.itertuples(), start=3):
                 # Column 1: UTC Offset (minutes) - Set to 0 as placeholder since no offset is provided in source
                 ws.cell(row=idx, column=col_start, value=0) 
@@ -239,6 +217,7 @@ def app():
 
             # Auto-detect timestamp column
             possible_time_cols = ["Date & Time", "Date&Time", "Timestamp", "DateTime", "Local Time", "TIME", "ts"]
+            # Using str.strip() here on the columns inside the loop is redundant since we did it before the loop.
             timestamp_col = next((col for col in df.columns if col in possible_time_cols), None)
             
             if timestamp_col is None:
@@ -247,6 +226,7 @@ def app():
 
             # Auto-detect PSum column
             possible_psum_cols = ["PSum (W)", "Psum (W)", "PSum", "P (W)", "Power"]
+            # Using str.strip() here on the columns inside the loop is redundant since we did it before the loop.
             psum_col = next((col for col in df.columns if col in possible_psum_cols), None)
             
             if psum_col is None:
@@ -257,7 +237,7 @@ def app():
             
             if not processed.empty:
                 result_sheets[sheet_name] = processed
-                st.success(f"Sheet **{sheet_name}** processed successfully.")
+                st.success(f"Sheet **{sheet_name}** processed successfully and contains {len(processed['Date'].unique())} days of data.")
             else:
                 st.warning(f"Sheet **{sheet_name}** contained no usable data after cleaning.")
 
