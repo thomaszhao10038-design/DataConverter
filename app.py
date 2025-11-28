@@ -209,23 +209,23 @@ def build_output_excel(sheets_dict):
             # Find the starting column for the first date's time stamps
             first_time_col = 2
             
-            # *** FIX: Ensure categories_ref uses the maximum required row count (3 + max_rows) ***
+            # Ensure categories_ref uses the maximum required row count (3 + max_rows)
             # Data starts at Row 4. Max row is 3 + max_rows.
             categories_ref = Reference(ws, min_col=first_time_col, min_row=4, max_row=3 + max_rows)
 
             col_start = 1
             for i, n_rows in enumerate(day_intervals):
                 # Data Reference (kW column, starts at Row 4)
-                # *** Added max_col for robustness ***
                 data_ref = Reference(ws, min_col=col_start+3, min_row=4, max_col=col_start+3, max_row=3+n_rows)
                 
-                # Retrieve the title directly from the sheet cell (Row 3, Col col_start+3)
-                date_title = ws.cell(row=3, column=col_start+3).value
+                # --- FIX: Use a Reference object for the title, not the string value ---
+                # Define the Reference object for the title cell (Row 3, Col col_start+3)
+                title_ref = Reference(ws, min_col=col_start + 3, min_row=3, max_col=col_start + 3, max_row=3)
 
-                # FIX: title_from_data parameter must be a boolean (False in this case)
-                # We add the data series and then set the title explicitly.
+                # We add the data series, set titles_from_data=False, and then set the title explicitly.
                 chart.add_data(data_ref, titles_from_data=False)
-                chart.series[-1].title = date_title
+                # Set the title of the last series added to the title cell reference
+                chart.series[-1].title = title_ref
                 
                 col_start += 4
 
