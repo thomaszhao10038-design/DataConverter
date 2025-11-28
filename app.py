@@ -39,7 +39,13 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
 
     try:
         # Convert the timestamp column to datetime objects
-        df[TIMESTAMP_COL] = pd.to_datetime(df[TIMESTAMP_COL])
+        # FIX APPLIED: Added format='mixed', dayfirst=True to correctly parse date formats 
+        # that use Day/Month/Year structure (e.g., 13/11/2025).
+        df[TIMESTAMP_COL] = pd.to_datetime(
+            df[TIMESTAMP_COL],
+            format='mixed', 
+            dayfirst=True
+        )
     except Exception as e:
         st.error(f"Error converting column '{TIMESTAMP_COL}' to datetime in sheet {sheet_name}. Error: {e}")
         return None
