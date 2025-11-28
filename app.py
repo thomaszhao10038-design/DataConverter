@@ -133,7 +133,7 @@ def build_output_excel(sheets_dict):
         # Structure:
         # Row 1: Merged Date Header (Full Date)
         # Row 2: Sub-headers (Time, W, kW)
-        # Row 3: Start of data (Time, W, kW) - (Previous Row 3 removed)
+        # Row 3: Start of data (Time, W, kW)
 
         for date in dates:
             # Get all data for the day (including NaNs for missing periods)
@@ -145,7 +145,7 @@ def build_output_excel(sheets_dict):
             n_rows = len(day_data_full) # Use full count for row structure
             day_intervals.append(n_rows)
             
-            data_start_row = 3 # Data starts at Row 3 (shifted up from 4)
+            data_start_row = 3 # Data starts at Row 3 
             merge_start = data_start_row
             merge_end = merge_start + n_rows - 1
 
@@ -161,8 +161,6 @@ def build_output_excel(sheets_dict):
             ws.cell(row=2, column=col_start+1, value="Local Time Stamp")
             ws.cell(row=2, column=col_start+2, value="Active Power (W)")
             ws.cell(row=2, column=col_start+3, value="kW")
-
-            # Row 3 Removed (Date string previously here is removed)
 
             # Merge UTC column (Starts at row 3 now)
             ws.merge_cells(start_row=merge_start, start_column=col_start, end_row=merge_end, end_column=col_start)
@@ -210,18 +208,18 @@ def build_output_excel(sheets_dict):
             chart.y_axis.title = "kW"
             chart.x_axis.title = "Time"
             
-            # --- UPDATE: Set Chart Size ---
-            chart.height = 12.5 # default is 7.5
-            chart.width = 23    # default is 15
+            # Set Chart Size
+            chart.height = 12.5 
+            chart.width = 23    
 
             max_rows = max(day_intervals)
             first_time_col = 2
-            # Categories ref: starts at row 3 (was 4), ends at 2+max_rows (was 3+max_rows)
+            # Categories ref: starts at row 3, ends at 2+max_rows
             categories_ref = Reference(ws, min_col=first_time_col, min_row=3, max_row=2 + max_rows)
 
             col_start = 1
             for i, n_rows in enumerate(day_intervals):
-                # Data ref: starts at row 3 (was 4), ends at 2+n_rows (was 3+n_rows)
+                # Data ref: starts at row 3, ends at 2+n_rows
                 data_ref = Reference(ws, min_col=col_start+3, min_row=3, max_col=col_start+3, max_row=2+n_rows)
                 
                 # Get series name from dates list using index
@@ -307,19 +305,29 @@ def build_output_excel(sheets_dict):
             chart_total.y_axis.title = "Max Power (kW)"
             chart_total.x_axis.title = "Date"
             
-            # --- UPDATE: Set Chart Size ---
+            # Set Chart Size
             chart_total.height = 15
             chart_total.width = 30
             
-            # Data References: Columns 2 to N+1 (Sheet Columns)
-            data_min_col = 2
-            data_max_col = len(sheet_names_list) + 1
             data_max_row = len(sorted_dates) + 1
             
+            # 1. Add individual sheets (Columns 2 up to len(sheet_names_list) + 1)
             for i, sheet_name in enumerate(sheet_names_list):
                 col = 2 + i
                 data_ref = Reference(ws_total, min_col=col, min_row=1, max_col=col, max_row=data_max_row)
                 chart_total.add_data(data_ref, titles_from_data=True)
+
+            # 2. Add Total Load (The final column: index len(sheet_names_list) + 2)
+            total_load_col = len(sheet_names_list) + 2
+            data_ref_total = Reference(ws_total, min_col=total_load_col, min_row=1, max_col=total_load_col, max_row=data_max_row)
+            
+            # Add data for Total Load
+            chart_total.add_data(data_ref_total, titles_from_data=True)
+            
+            # Style the last series (Total Load) to stand out
+            s = chart_total.series[-1]
+            s.graphicalProperties.line.width = 40000 # Thicker line (40000 Emu = 4pt)
+            s.graphicalProperties.line.solidFill = "FF0000" # Red line color (hex code)
 
             # Category Axis: Date Column (Col 1)
             cats_ref = Reference(ws_total, min_col=1, min_row=2, max_row=data_max_row)
@@ -348,7 +356,7 @@ def app():
         
         The output Excel file includes:
         1. **Individual Sheet Analysis:** A **line chart** and a **Max Power Summary table** for each day.
-        2. **Total Summary Sheet:** A comparative table and graph of daily max power across all sheets.
+        2. **Total Summary Sheet:** A comparative table and graph of daily max power across all sheets, **including the Total Load series**.
     """)
 
     uploaded = st.file_uploader("Upload .xlsx file", type=["xlsx"])
