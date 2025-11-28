@@ -76,10 +76,18 @@ def create_excel_file_multi(processed_sheets):
     # Sort the index (Local Time Stamp) to ensure chronological order
     merged_df.sort_index(inplace=True)
 
-    # 2. Create Multi-Level Header Structure and Final DataFrame
+    # 2. Prepare Data for Manual Excel Write
     
-    # Define the first non-dynamic header group
-    headers = [('UTC Offset (minutes)', '')]
+    # Define the headers and column data mapping dynamically
+    headers_top = ['UTC Offset (minutes)']
+    headers_bottom = ['']
+    
+    # Get the raw data from the merged DataFrame, including the timestamp index
+    data_rows = merged_df.reset_index()
+    data_rows = data_rows.rename(columns={'Local Time Stamp': 'Timestamp_Index'})
+    
+    # Column mapping for data retrieval
+    column_map = ['Timestamp_Index'] # Start with the index column
     
     # Dynamically generate headers for each sheet
     for sheet_id, data in processed_sheets.items():
@@ -88,46 +96,58 @@ def create_excel_file_multi(processed_sheets):
         
         # Add a blank separator column before the next sheet, unless it's the first sheet
         if sheet_id > 1:
-            headers.append(('', '')) # Blank Separator Column
+            headers_top.append('') # Top separator
+            headers_bottom.append('') # Bottom separator
+            column_map.append(None) # No data column for separator
 
         # Add the three columns for the current sheet
         top_level = f'{sheet_name} ({date_str})'
-        headers.extend([
-            (top_level, 'Local Time Stamp'),
-            (top_level, 'Active Power (W)'), 
-            (top_level, 'kW')
+        headers_top.extend([top_level, top_level, top_level])
+        headers_bottom.extend(['Local Time Stamp', 'Active Power (W)', 'kW'])
+        
+        # Add column names from merged_df
+        column_map.extend([
+            'Timestamp_Index', # This column will be populated by the index (time)
+            f'Active Power (W)_{sheet_id}', 
+            f'kW_{sheet_id}'
         ])
 
-    multi_index = pd.MultiIndex.from_tuples(headers)
-    output_df = pd.DataFrame(columns=multi_index)
-
-    # 3. Populate the Final DataFrame
-    for index, row in merged_df.iterrows():
-        new_row = ['',] # Start with 'UTC Offset (minutes)' column (always blank)
-
-        for sheet_id, data in processed_sheets.items():
-            # Add blank separator column (if not the first sheet)
-            if sheet_id > 1:
-                new_row.append('')
-            
-            # The Local Time Stamp (index) is repeated for each sheet's time column
-            new_row.append(index)
-            
-            # Retrieve the processed data columns using the merge suffix
-            new_row.append(row.get(f'Active Power (W)_{sheet_id}', ''))
-            new_row.append(row.get(f'kW_{sheet_id}', ''))
-
-        # Ensure the row length matches the number of columns in the MultiIndex
-        if len(new_row) == len(output_df.columns):
-            output_df.loc[len(output_df)] = new_row
-        else:
-            st.error(f"Internal error: Row size mismatch for timestamp {index}. Skipping row.")
-
-    # 4. Create the Excel file in memory
+    # 3. Create the Excel file in memory with Manual Header Write (Fix for MultiIndex error)
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Note: startrow=0 includes the multi-level headers
-        output_df.to_excel(writer, sheet_name='Consolidated', index=False, startrow=0)
+        workbook = writer.book
+        sheet_name = 'Consolidated'
+        worksheet = workbook.create_sheet(sheet_name)
+        
+        # Manually write the top row of the MultiIndex header
+        worksheet.append(headers_top)
+        
+        # Manually write the bottom row of the MultiIndex header
+        worksheet.append(headers_bottom)
+        
+        # Write the data rows
+        # Loop through the rows of the data_rows DataFrame
+        for index, row in data_rows.iterrows():
+            new_row = []
+            
+            # Construct the row based on the defined column_map
+            for col_name in column_map:
+                if col_name is None:
+                    # Separator column
+                    new_row.append('')
+                elif col_name == 'Timestamp_Index':
+                    # Local Time Stamp column (repeated)
+                    new_row.append(row[col_name])
+                else:
+                    # Active Power or kW column (use .get() to handle NaN/missing values gracefully)
+                    value = row.get(col_name, '')
+                    new_row.append(value if pd.notna(value) else '')
+
+            worksheet.append(new_row)
+        
+        # Remove the default empty sheet created by openpyxl
+        if 'Sheet' in workbook.sheetnames:
+             workbook.remove(workbook['Sheet'])
     
     return output.getvalue()
 
@@ -200,7 +220,8 @@ if uploaded_excel_file:
                     st.markdown("Your Excel file is ready!")
                     
                 except Exception as e:
-                    st.error(f"An error occurred during final Excel file creation: {e}")
+                    # This fallback should ideally not be hit now, but kept for general safety
+                    st.error(f"An unexpected error occurred during final Excel file creation: {e}")
         elif successful_sheets == 1:
             st.warning(f"Only 1 sheet ('{list(processed_sheets.values())[0]['name']}') was successfully processed. You need at least two sheets for the side-by-side comparison format.")
         else:
