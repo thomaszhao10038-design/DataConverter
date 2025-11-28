@@ -54,8 +54,11 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     # FIX: Explicitly clean and ensure Power column is numeric before aggregation
     # 1. Convert to string and strip whitespace (in case of hidden chars/spaces)
     df[POWER_COL_IN] = df[POWER_COL_IN].astype(str).str.strip()
-    # 2. Coerce non-numeric values to NaN
-    df[POWER_COL_IN] = pd.to_numeric(df[POWER_COL_IN], errors='coerce')
+    
+    # 2. Coerce non-numeric values to NaN, specifically handling comma as a decimal separator
+    # This is often the fix for international Excel files
+    df[POWER_COL_IN] = pd.to_numeric(df[POWER_COL_IN], errors='coerce', decimal=',')
+    
     # 3. Drop rows where power value is invalid
     df = df.dropna(subset=[POWER_COL_IN])
     
