@@ -4,6 +4,7 @@ from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, PatternFill, Font, Border, Side, numbers
 from openpyxl.chart import LineChart, Reference, Series
+from openpyxl.utils import get_column_letter
 
 # --- Configuration ---
 POWER_COL_OUT = 'PSumW'
@@ -222,9 +223,9 @@ def build_output_excel(sheets_dict):
                 # Get series name as string
                 date_title_str = ws.cell(row=3, column=col_start+3).value
                 
-                # FIX: Set titles_from_data=False and assign the string title to the series
-                chart.add_data(data_ref, titles_from_data=False)
-                chart.series[-1].title = date_title_str
+                # Use Series object directly to avoid TypeError with chart.series[-1].title
+                s = Series(values=data_ref, title=date_title_str)
+                chart.series.append(s)
                 
                 col_start += 4
 
@@ -266,8 +267,8 @@ def build_output_excel(sheets_dict):
             cell.fill = header_fill
             cell.alignment = Alignment(horizontal="center")
             cell.border = thin_border
-            # Set rough column width
-            ws_total.column_dimensions[chr(64+col_idx) if col_idx <= 26 else 'A'+chr(64+col_idx-26)].width = 20
+            # Set rough column width using get_column_letter for >26 columns support
+            ws_total.column_dimensions[get_column_letter(col_idx)].width = 20
 
         # Write Data
         sorted_dates = sorted(total_sheet_data.keys())
