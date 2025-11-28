@@ -79,6 +79,12 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         st.error(f"Sheet **{sheet_name}**: After cleaning and ensuring numeric power values, the DataFrame is empty. This suggests all power values in the '{POWER_COL_IN}' column were non-numeric or malformed. Please verify the raw data.")
         return pd.DataFrame()
     
+    # NEW FIX: Take the absolute magnitude of instantaneous power (PSum (W)) readings.
+    # This ensures that both consumption (positive) and generation/export (negative) readings 
+    # contribute to the sum, preventing them from cancelling each other out and 
+    # resulting in non-zero sums for periods with activity.
+    df[POWER_COL_IN] = df[POWER_COL_IN].abs()
+
     # Set the valid timestamp column as the index for resampling
     df_indexed = df.set_index(TIMESTAMP_COL)
 
@@ -107,7 +113,7 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
 
         # Resample the PSum (W) column to 10-minute intervals. 
         # Sum is used for aggregation, matching the requirement (00:00:00 up to 00:09:59...).
-        # This aggregates all instantaneous power readings within the 10-minute window.
+        # Since we took the absolute value above, this correctly sums the magnitude of power flow.
         resampled_series = day_group[POWER_COL_IN].resample(
             '10min', 
             label='left', 
@@ -129,7 +135,6 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         
         # CRITICAL FIX: Replace NaN values (periods with no readings) with 0, 
         # as the requirement is to register 0 power use if no instantaneous data exists.
-        # This ensures periods where the input file had no readings for 10 minutes are set to 0 W.
         final_daily_output['Active Power (W)'] = final_daily_output['Active Power (W)'].fillna(0)
         
         # Calculate derived metrics and set the required output columns
@@ -139,8 +144,8 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         # of the Index to correctly generate the time stamps.
         final_daily_output['Local Time Stamp'] = [t.strftime('%H:%M') for t in final_daily_output.index]
 
-        # These columns should now be filled because Active Power (W) is numeric (or 0)
-        final_daily_output['kW'] = final_daily_output['Active Power (W)'].abs() / 1000
+        # The kW calculation is now simply the Active Power (W) sum divided by 1000
+        final_daily_output['kW'] = final_daily_output['Active Power (W)'] / 1000
         
         # Final column selection and naming convention
         final_daily_output = final_daily_output[['UTC Offset (minutes)', 'Local Time Stamp', 'Active Power (W)', 'kW']]
