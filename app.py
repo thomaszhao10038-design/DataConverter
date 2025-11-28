@@ -1,73 +1,64 @@
 import pandas as pd
-from flask import Flask, request, send_file, jsonify
+from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 from io import BytesIO
 from openpyxl.writer.excel import save_virtual_workbook
 
-app = Flask(__name__)
+app = FastAPI()
+
 
 def round_to_10min(ts):
-    """
-    Round a pandas timestamp object to nearest 10 minutes.
-    """
     if pd.isna(ts):
         return ts
-    # Convert to pandas Timestamp
+
     ts = pd.to_datetime(ts)
-    # Seconds since the hour
     minutes = ts.minute
     remainder = minutes % 10
 
     if remainder < 5:
-        rounded_min = minutes - remainder
+        rounded = minutes - remainder
     else:
-        rounded_min = minutes + (10 - remainder)
+        rounded = minutes + (10 - remainder)
 
-    # Adjust hour if >= 60
-    if rounded_min == 60:
+    if rounded == 60:
         ts = ts.replace(minute=0) + pd.Timedelta(hours=1)
     else:
-        ts = ts.replace(minute=rounded_min)
+        ts = ts.replace(minute=rounded)
 
     return ts.replace(second=0, microsecond=0)
 
-@app.route("/convert", methods=["POST"])
-def convert_file():
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
 
-    file = request.files["file"]
-    ts_col = request.form.get("timestamp_column", "Timestamp")
-
+@app.post("/convert")
+async def convert_file(
+    file: UploadFile = File(...),
+    timestamp_column: str = Form("Timestamp")
+):
     try:
-        df = pd.read_excel(file)
+        # Read uploaded Excel file
+        df = pd.read_excel(file.file)
 
-        if ts_col not in df.columns:
-            return jsonify({"error": f"Column '{ts_col}' not found"}), 400
+        if timestamp_column not in df.columns:
+            return {"error": f"Column '{timestamp_column}' not found."}
 
         # Apply rounding
-        df["Rounded_Time"] = df[ts_col].apply(round_to_10min)
+        df["Rounded_Time"] = df[timestamp_column].apply(round_to_10min)
 
-        # Save to memory
-        output = BytesIO()
+        # Convert to output Excel
+        output_stream = BytesIO()
         excel_data = save_virtual_workbook(df.to_excel(index=False))
-        output.write(excel_data)
-        output.seek(0)
+        output_stream.write(excel_data)
+        output_stream.seek(0)
 
-        return send_file(
-            output,
-            as_attachment=True,
-            download_name="converted.xlsx",
-            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        return StreamingResponse(
+            output_stream,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=converted.xlsx"}
         )
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return {"error": str(e)}
 
 
-@app.route("/")
-def index():
-    return "Data Converter API is running."
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+@app.get("/")
+def home():
+    return {"status": "Data Converter API is running!"}
