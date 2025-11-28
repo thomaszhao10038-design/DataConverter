@@ -15,6 +15,7 @@ def process_sheet(df, timestamp_col, psum_col):
     """
     Processes a single DataFrame sheet: cleans data, rounds timestamps to 10-minute intervals,
     filters out leading/trailing zero periods, and prepares data for Excel output.
+    Periods outside the first and last non-zero reading are filled with NaN (blank) upon re-indexing.
     """
     df.columns = df.columns.astype(str).str.strip()
     # Convert timestamp column, handling various date formats
@@ -44,7 +45,7 @@ def process_sheet(df, timestamp_col, psum_col):
     
     # Slice the DataFrame to keep data between the first and last active reading.
     # This preserves internal zero readings but removes periods before and after activity.
-    df = df.loc[first_valid_idx:last_valid_idx]
+    df = df.loc[first_valid_idx:last_valid_idx].copy()
 
     # ----------------------------------------------------
     
@@ -76,19 +77,25 @@ def process_sheet(df, timestamp_col, psum_col):
         inclusive='left'
     )
     
-    # Reindex with the full index, filling missing slots (now outside the activity range) with 0
+    # Reindex with the full index, filling missing slots with NaN (blank) instead of 0.
+    # This ensures periods before the first recorded activity and after the last recorded 
+    # activity are blank, while any legitimate 0s within the active period remain 0.
     df_indexed_for_reindex = df_out.set_index('Rounded')
-    df_padded_series = df_indexed_for_reindex[POWER_COL_OUT].reindex(full_time_index, fill_value=0)
+    df_padded_series = df_indexed_for_reindex[POWER_COL_OUT].reindex(full_time_index) # Removed fill_value=0
     
     grouped = df_padded_series.reset_index().rename(columns={'index': 'Rounded'})
     grouped.columns = ['Rounded', POWER_COL_OUT]
+    
+    # Ensure the column is float type to correctly hold NaN values
+    grouped[POWER_COL_OUT] = grouped[POWER_COL_OUT].astype(float) 
+
     grouped["Date"] = grouped["Rounded"].dt.date
     grouped["Time"] = grouped["Rounded"].dt.strftime("%H:%M") 
     
     # Filter back to only the dates originally present in the file
     grouped = grouped[grouped["Date"].isin(original_dates)]
     
-    # Add kW column (absolute value)
+    # Add kW column (absolute value). Since NaN * 1000 = NaN, this works fine.
     grouped['kW'] = grouped[POWER_COL_OUT].abs() / 1000
     
     return grouped
@@ -117,8 +124,14 @@ def build_output_excel(sheets_dict):
         day_intervals = []
 
         for date in dates:
-            day_data = df[df["Date"] == date].sort_values("Time")
-            n_rows = len(day_data)
+            # Get all data for the day (including NaNs for missing periods)
+            day_data_full = df[df["Date"] == date].sort_values("Time")
+            
+            # Data used for calculations (excluding the new NaNs from outside the active period)
+            # This is crucial for correct statistical calculation (Total, Average, Max)
+            day_data_active = day_data_full.dropna(subset=[POWER_COL_OUT])
+            
+            n_rows = len(day_data_full) # Use full count for row structure
             day_intervals.append(n_rows)
             merge_start = 3
             merge_end = merge_start + n_rows - 1
@@ -140,20 +153,23 @@ def build_output_excel(sheets_dict):
             ws.merge_cells(start_row=merge_start, start_column=col_start, end_row=merge_end, end_column=col_start)
             ws.cell(row=merge_start, column=col_start, value=date_str_full).alignment = Alignment(horizontal="center", vertical="center")
 
-            # Fill data
-            for idx, r in enumerate(day_data.itertuples(), start=merge_start):
+            # Fill data (using day_data_full to include NaNs)
+            for idx, r in enumerate(day_data_full.itertuples(), start=merge_start):
+                # .itertuples() preserves NaN, which openpyxl writes as blank
                 ws.cell(row=idx, column=col_start+1, value=r.Time)
-                ws.cell(row=idx, column=col_start+2, value=getattr(r, POWER_COL_OUT))
+                # Power (W) column
+                ws.cell(row=idx, column=col_start+2, value=getattr(r, POWER_COL_OUT)) 
+                # kW column
                 ws.cell(row=idx, column=col_start+3, value=r.kW)
 
-            # Summary stats
+            # Summary stats (using day_data_active to exclude NaNs)
             stats_row_start = merge_end + 1
-            sum_w = day_data[POWER_COL_OUT].sum()
-            mean_w = day_data[POWER_COL_OUT].mean()
-            max_w = day_data[POWER_COL_OUT].max()
-            sum_kw = day_data['kW'].sum()
-            mean_kw = day_data['kW'].mean()
-            max_kw = day_data['kW'].max()
+            sum_w = day_data_active[POWER_COL_OUT].sum()
+            mean_w = day_data_active[POWER_COL_OUT].mean()
+            max_w = day_data_active[POWER_COL_OUT].max()
+            sum_kw = day_data_active['kW'].sum()
+            mean_kw = day_data_active['kW'].mean()
+            max_kw = day_data_active['kW'].max()
 
             ws.cell(row=stats_row_start, column=col_start+1, value="Total")
             ws.cell(row=stats_row_start, column=col_start+2, value=sum_w)
@@ -178,9 +194,6 @@ def build_output_excel(sheets_dict):
             chart.x_axis.title = "Time"
 
             max_rows = max(day_intervals)
-            # Reference for categories (Time stamps)
-            categories_ref = Reference(ws, min_col=col_start-3, min_row=3, max_row=2+max_rows) 
-            
             # Find the starting column for the first date's time stamps
             first_time_col = 2
             categories_ref = Reference(ws, min_col=first_time_col, min_row=3, max_row=2+max_rows)
@@ -231,7 +244,7 @@ def app():
     st.markdown("""
         Upload an **Excel file (.xlsx)** with time-series data. Each sheet is processed to calculate total absolute power (W) in 10-minute intervals. 
         
-        **New Feature:** Leading and trailing zero values (representing missing readings) are now filtered out, but zero values *within* the active recording period are kept.
+        **New Feature:** Leading and trailing zero values (representing missing readings) are now filtered out and appear blank, but zero values *within* the active recording period are kept.
         
         The output Excel file includes a **line chart** and a **Max Power Summary table** for each day.
     """)
