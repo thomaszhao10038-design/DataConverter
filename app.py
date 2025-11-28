@@ -63,7 +63,7 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     all_dates = pd.Series(all_dates).dropna().unique()
 
     # Create a template index for a full 24-hour day (144 points)
-    # This is crucial for consistent horizontal alignment
+    # This is crucial for consistent horizontal alignment. Use datetime.time objects for index.
     time_only_index = pd.to_datetime([f'{i:02d}:{j:02d}' for i in range(24) for j in range(0, 60, 10)], format='%H:%M').time
     template_df = pd.DataFrame(index=time_only_index)
 
@@ -78,7 +78,7 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
             continue
 
         # Resample the PSum (W) column to 10-minute intervals. 
-        # FIX: Changed .mean() to .sum() as requested by the user.
+        # Sum is used for aggregation.
         resampled_series = day_group[POWER_COL_IN].resample(
             '10min', 
             label='left', 
@@ -92,9 +92,9 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         
         # --- Prepare for Padding and Final Output Columns ---
         
-        # Use a temporary index (Time_Only) for re-indexing against the 144-row template
-        daily_output['Time_Only'] = daily_output.index.strftime('%H:%M').to_series()
-        daily_output = daily_output.set_index(pd.to_datetime(daily_output['Time_Only'], format='%H:%M').dt.time)
+        # FIX APPLIED: Extract the time component (datetime.time) from the DatetimeIndex directly 
+        # and set it as the new index for joining with the template. This avoids the strftime error.
+        daily_output.index = daily_output.index.time
         
         # Re-index against the full 144-row template to fill missing intervals with NaN
         final_daily_output = template_df.join(daily_output, how='left')
