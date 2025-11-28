@@ -117,7 +117,8 @@ def build_output_excel(sheets_dict):
             
             # Merge header (Date)
             ws.merge_cells(start_row=1, start_column=col_start, end_row=1, end_column=col_start+3)
-            ws.cell(row=1, column=col_start, value=date_str_full).alignment = Alignment(horizontal="center")
+            date_cell = ws.cell(row=1, column=col_start, value=date_str_full)
+            date_cell.alignment = Alignment(horizontal="center")
 
             # Sub-headers
             ws.cell(row=2, column=col_start, value="UTC Offset (minutes)")
@@ -160,8 +161,12 @@ def build_output_excel(sheets_dict):
             # The data series (Y values) are the kW values (column +3)
             data_ref = Reference(ws, min_col=col_start+3, min_row=merge_start, max_row=merge_end)
             
-            # Create a Series object for the chart, titled by the full date
-            series = Series(data_ref, title=date_str_full)
+            # --- FIX: Use a Reference object for the series title ---
+            # The title is the date string, which is in the cell starting at (1, col_start)
+            title_ref = Reference(ws, min_col=col_start, min_row=1)
+            
+            # Create a Series object for the chart, setting the title using the Reference
+            series = Series(data_ref, title=title_ref)
             chart_series_list.append(series)
             
             col_start += 4 # Move to the next set of 4 columns for the next day
