@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, PatternFill, Font, Side, numbers
+from openpyxl.styles import Alignment, PatternFill, Font, Border, Side, numbers
 from openpyxl.chart import LineChart, Reference
 
 # --- Configuration ---
@@ -78,8 +78,10 @@ def process_sheet(df, timestamp_col, psum_col):
     )
     
     # Reindex with the full index, filling missing slots with NaN (blank) instead of 0.
+    # This ensures periods before the first recorded activity and after the last recorded 
+    # activity are blank, while any legitimate 0s within the active period remain 0.
     df_indexed_for_reindex = df_out.set_index('Rounded')
-    df_padded_series = df_indexed_for_reindex[POWER_COL_OUT].reindex(full_time_index) 
+    df_padded_series = df_indexed_for_reindex[POWER_COL_OUT].reindex(full_time_index) # Removed fill_value=0
     
     grouped = df_padded_series.reset_index().rename(columns={'index': 'Rounded'})
     grouped.columns = ['Rounded', POWER_COL_OUT]
@@ -102,30 +104,23 @@ def process_sheet(df, timestamp_col, psum_col):
 # BUILD EXCEL
 # -----------------------------
 def build_output_excel(sheets_dict):
-    """
-    Creates the final formatted Excel file with data, charts, and summary,
-    including a new 'Total' summary sheet.
-    """
+    """Creates the final formatted Excel file with data, charts, and summary."""
     wb = Workbook()
     if 'Sheet' in wb.sheetnames:
         wb.remove(wb['Sheet'])
 
     header_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid')
-    total_fill = PatternFill(start_color='F0E68C', end_color='F0E68C', fill_type='solid')
     title_font = Font(bold=True, size=12)
+    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'),
+                             top=Side(style='thin'), bottom=Side(style='thin'))
 
-    # Store daily max data across all sheets for the 'Total' sheet
-    # Format: {date_str_short: {sheet_name: max_kw}}
-    all_daily_max_data = {}
-    all_sheet_names = list(sheets_dict.keys())
-
-    # --- 1. Process Individual Sheets and Collect Max Data ---
     for sheet_name, df in sheets_dict.items():
         ws = wb.create_sheet(sheet_name)
         dates = sorted(df["Date"].unique())
         col_start = 1
         max_row_used = 0
         daily_max_summary = []
+
         day_intervals = []
 
         for date in dates:
@@ -133,6 +128,7 @@ def build_output_excel(sheets_dict):
             day_data_full = df[df["Date"] == date].sort_values("Time")
             
             # Data used for calculations (excluding the new NaNs from outside the active period)
+            # This is crucial for correct statistical calculation (Total, Average, Max)
             day_data_active = day_data_full.dropna(subset=[POWER_COL_OUT])
             
             n_rows = len(day_data_full) # Use full count for row structure
@@ -157,18 +153,20 @@ def build_output_excel(sheets_dict):
             ws.merge_cells(start_row=merge_start, start_column=col_start, end_row=merge_end, end_column=col_start)
             ws.cell(row=merge_start, column=col_start, value=date_str_full).alignment = Alignment(horizontal="center", vertical="center")
 
-            # Fill data
+            # Fill data (using day_data_full to include NaNs)
             for idx, r in enumerate(day_data_full.itertuples(), start=merge_start):
+                # .itertuples() preserves NaN, which openpyxl writes as blank
                 ws.cell(row=idx, column=col_start+1, value=r.Time)
+                # Power (W) column
                 ws.cell(row=idx, column=col_start+2, value=getattr(r, POWER_COL_OUT)) 
+                # kW column
                 ws.cell(row=idx, column=col_start+3, value=r.kW)
 
-            # Summary stats
+            # Summary stats (using day_data_active to exclude NaNs)
             stats_row_start = merge_end + 1
             sum_w = day_data_active[POWER_COL_OUT].sum()
             mean_w = day_data_active[POWER_COL_OUT].mean()
             max_w = day_data_active[POWER_COL_OUT].max()
-            # Calculate kW summary stats
             sum_kw = day_data_active['kW'].sum()
             mean_kw = day_data_active['kW'].mean()
             max_kw = day_data_active['kW'].max()
@@ -185,16 +183,10 @@ def build_output_excel(sheets_dict):
 
             max_row_used = max(max_row_used, stats_row_start+2)
             daily_max_summary.append((date_str_short, max_kw))
-            
-            # --- Collect data for 'Total' summary sheet ---
-            if date_str_short not in all_daily_max_data:
-                all_daily_max_data[date_str_short] = {}
-            # Store the daily max kW for the sheet
-            all_daily_max_data[date_str_short][sheet_name] = max_kw
 
             col_start += 4
 
-        # Add Line Chart (Existing Logic)
+        # Add Line Chart
         if dates:
             chart = LineChart()
             chart.title = f"Daily 10-Minute Absolute Power Profile - {sheet_name}"
@@ -202,22 +194,21 @@ def build_output_excel(sheets_dict):
             chart.x_axis.title = "Time"
 
             max_rows = max(day_intervals)
+            # Find the starting column for the first date's time stamps
             first_time_col = 2
             categories_ref = Reference(ws, min_col=first_time_col, min_row=3, max_row=2+max_rows)
 
             col_start = 1
             for n_rows in day_intervals:
+                # Reference for data (kW column)
                 data_ref = Reference(ws, min_col=col_start+3, min_row=3, max_row=2+n_rows)
-                # Set series name using the date header
-                series_title_ref = Reference(ws, min_col=col_start, min_row=1)
                 chart.add_data(data_ref, titles_from_data=False)
-                chart.series[-1].title = series_title_ref
                 col_start += 4
 
             chart.set_categories(categories_ref)
             ws.add_chart(chart, f'G{max_row_used+2}')
 
-        # Add Daily Max Summary Table (Existing Logic)
+        # Add Daily Max Summary Table
         if daily_max_summary:
             start_row = max_row_used + 22
             ws.cell(row=start_row, column=1, value="Daily Max Power (kW) Summary").font = title_font
@@ -235,58 +226,9 @@ def build_output_excel(sheets_dict):
             ws.column_dimensions['A'].width = 15
             ws.column_dimensions['B'].width = 15
 
-
-    # --- 2. Create 'Total' Summary Sheet ---
-    if all_daily_max_data:
-        # Create as the first sheet (index 0)
-        ws_total = wb.create_sheet("Total", 0) 
-        all_dates_short_str = sorted(all_daily_max_data.keys())
-        
-        # Header Row
-        current_col = 1
-        ws_total.cell(row=1, column=current_col, value="Date").fill = header_fill
-        current_col += 1
-        
-        for name in all_sheet_names:
-            ws_total.cell(row=1, column=current_col, value=name).fill = header_fill
-            current_col += 1
-            
-        ws_total.cell(row=1, column=current_col, value="Total Load (kW)").fill = total_fill
-        
-        # Data Rows
-        for r, date_str_short in enumerate(all_dates_short_str, start=2):
-            row = r
-            current_col = 1
-            total_load = 0
-            
-            # Date
-            ws_total.cell(row=row, column=current_col, value=date_str_short).alignment = Alignment(horizontal='center')
-            current_col += 1
-            
-            # Sheet Data (Daily Max kW)
-            for name in all_sheet_names:
-                # Use .get(name, 0) to ensure the max kW is 0 if a sheet has no data for that day
-                max_kw = all_daily_max_data[date_str_short].get(name, 0)
-                ws_total.cell(row=row, column=current_col, value=max_kw).number_format = numbers.FORMAT_NUMBER_00
-                total_load += max_kw
-                current_col += 1
-            
-            # Total Load
-            ws_total.cell(row=row, column=current_col, value=total_load).number_format = numbers.FORMAT_NUMBER_00
-            ws_total.cell(row=row, column=current_col).fill = total_fill
-
-        # Auto-adjust column widths
-        ws_total.column_dimensions['A'].width = 15
-        for col_idx in range(2, len(all_sheet_names) + 2):
-            col_letter = numbers.get_column_letter(col_idx)
-            ws_total.column_dimensions[col_letter].width = 15
-        # Set width for the Total column
-        ws_total.column_dimensions[numbers.get_column_letter(len(all_sheet_names) + 2)].width = 20
-
-    # --- 3. Final Save ---
     stream = BytesIO()
     # Remove the default empty sheet created automatically if it's still there
-    if 'Sheet' in wb.sheetnames:
+    if 'Sheet' in wb.sheetnames and len(wb.sheetnames) > len(sheets_dict):
         wb.remove(wb['Sheet'])
         
     wb.save(stream)
@@ -304,7 +246,7 @@ def app():
         
         **New Feature:** Leading and trailing zero values (representing missing readings) are now filtered out and appear blank, but zero values *within* the active recording period are kept.
         
-        The output Excel file includes a **line chart**, a **Max Power Summary table** for each day on its respective sheet, and a **Total Max Load Summary** on the "Total" sheet.
+        The output Excel file includes a **line chart** and a **Max Power Summary table** for each day.
     """)
 
     uploaded = st.file_uploader("Upload .xlsx file", type=["xlsx"])
@@ -317,7 +259,6 @@ def app():
         for sheet_name in xls.sheet_names:
             st.markdown(f"**Processing sheet: `{sheet_name}`**")
             try:
-                # Read data
                 df = pd.read_excel(uploaded, sheet_name=sheet_name)
             except Exception as e:
                 st.error(f"Error reading sheet '{sheet_name}': {e}")
@@ -325,19 +266,16 @@ def app():
 
             df.columns = df.columns.astype(str).str.strip()
 
-            # Identify timestamp column
             timestamp_col = next((c for c in df.columns if c in ["Date & Time","Date&Time","Timestamp","DateTime","Local Time","TIME","ts"]), None)
             if not timestamp_col:
                 st.error(f"No valid timestamp column in sheet '{sheet_name}' (expected: Date & Time, Timestamp, etc.)")
                 continue
 
-            # Identify PSum column
             psum_col = next((c for c in df.columns if c in ["PSum (W)","Psum (W)","PSum","P (W)","Power"]), None)
             if not psum_col:
                 st.error(f"No valid PSum column in sheet '{sheet_name}' (expected: PSum (W), Power, etc.)")
                 continue
 
-            # Process data
             processed = process_sheet(df, timestamp_col, psum_col)
             if not processed.empty:
                 result_sheets[sheet_name] = processed
