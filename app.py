@@ -192,7 +192,7 @@ def build_output_excel(sheets_dict):
             chart.title = f"Daily 10-Minute Absolute Power Profile - {sheet_name}"
             
             # --- Chart Size Adjustment (Approx. 7.37" H x 19.68" W) ---
-            # Openpyxl uses unitless floats for chart dimensions.
+            # Dimensions requested by user are set here.
             chart.height = 7.37 
             chart.width = 19.68 
 
@@ -200,11 +200,11 @@ def build_output_excel(sheets_dict):
             chart.y_axis.title = "kW"
             # Start Y-axis at zero
             chart.y_axis.scaling.min = 0 
-            # Removed fixed majorUnit=10: openpyxl will auto-determine the interval
+            # Interval is auto-determined by Excel since majorUnit is not set.
             
             # --- X-Axis Configuration (Time) ---
             chart.x_axis.title = "Time"
-            # Removed fixed majorUnit: openpyxl will auto-determine the interval
+            # Interval is auto-determined by Excel since majorUnit is not set.
             # Display time in H:MM format
             chart.x_axis.numberFormat = 'h:mm' 
 
