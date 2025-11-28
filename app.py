@@ -76,22 +76,25 @@ def build_output_excel(sheets_dict):
         col_start = 1
         daily_max_summary = []
         max_row_used = 0
-        max_intervals = 0
         chart_series_data = []
+
+        # Track max intervals per day separately
+        day_intervals = {}
 
         for date in dates:
             date_str_short = date.strftime('%d-%b')
             date_str_full = date.strftime('%Y-%m-%d')
-
             day_data = df[df["Date"] == date].sort_values("Time")
             data_rows_count = len(day_data)
             merge_start_row = 3
             merge_end_row = 2 + data_rows_count
-            max_intervals = max(max_intervals, data_rows_count)
+            day_intervals[date_str_short] = data_rows_count
 
+            # Merge date header
             ws.merge_cells(start_row=1, start_column=col_start, end_row=1, end_column=col_start+3)
             ws.cell(row=1, column=col_start, value=date_str_full).alignment = Alignment(horizontal="center", vertical="center")
 
+            # Sub-headers
             ws.cell(row=2, column=col_start, value="UTC Offset (minutes)")
             ws.cell(row=2, column=col_start+1, value="Local Time Stamp")
             ws.cell(row=2, column=col_start+2, value="Active Power (W)")
@@ -101,12 +104,14 @@ def build_output_excel(sheets_dict):
                 ws.merge_cells(start_row=merge_start_row, start_column=col_start, end_row=merge_end_row, end_column=col_start)
                 ws.cell(row=merge_start_row, column=col_start, value=date_str_full).alignment = Alignment(horizontal="center", vertical="center")
 
+            # Fill rows
             for idx, r in enumerate(day_data.itertuples(), start=3):
                 ws.cell(row=idx, column=col_start+1, value=r.Time)
                 power_w = getattr(r, POWER_COL_OUT)
                 ws.cell(row=idx, column=col_start+2, value=power_w)
                 ws.cell(row=idx, column=col_start+3, value=abs(power_w)/1000)
 
+            # Summary stats
             if data_rows_count > 0:
                 sum_w = day_data[POWER_COL_OUT].sum()
                 mean_w = day_data[POWER_COL_OUT].mean()
@@ -130,7 +135,7 @@ def build_output_excel(sheets_dict):
 
                 max_row_used = max(max_row_used, stats_row_start+2)
                 daily_max_summary.append((date_str_short, max_kw_abs))
-                chart_series_data.append((col_start+3, col_start))
+                chart_series_data.append((col_start+3, date_str_short))
 
             col_start += 4
 
@@ -170,21 +175,21 @@ def build_output_excel(sheets_dict):
                 max_cell.alignment = Alignment(horizontal="right")
 
         # Chart
-        if chart_series_data and max_intervals > 0:
+        if chart_series_data:
             chart = LineChart()
             chart.title = "Daily Absolute Power Profile (kW)"
             chart.style = 10
-            time_categories = Reference(ws, min_col=2, min_row=3, max_col=2, max_row=2+max_intervals)
-            chart.set_categories(time_categories)
 
-            for kw_col_idx, _ in chart_series_data:
-                values = Reference(ws, min_col=kw_col_idx, min_row=3, max_col=kw_col_idx, max_row=2+max_intervals)
+            for kw_col_idx, day_str in chart_series_data:
+                num_rows = day_intervals[day_str]
+                values = Reference(ws, min_col=kw_col_idx, min_row=3, max_col=kw_col_idx, max_row=2+num_rows)
                 chart.add_data(values, titles_from_data=False)
+                chart.series[-1].title = day_str  # Assign series title safely
 
-            # Optional: assign series names
-            for i, s in enumerate(chart.series):
-                header_col_idx = chart_series_data[i][1]
-                s.title = ws.cell(row=1, column=header_col_idx).value
+            # X-axis categories (first day times)
+            first_day_rows = day_intervals[chart_series_data[0][1]]
+            categories = Reference(ws, min_col=2, min_row=3, max_col=2, max_row=2+first_day_rows)
+            chart.set_categories(categories)
 
             chart.x_axis.title = "10-Minute Interval"
             chart.y_axis.title = "Absolute Power (kW)"
