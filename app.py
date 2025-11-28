@@ -5,6 +5,8 @@ from openpyxl import Workbook
 # Import PatternFill, Font, numbers, and chart components for enhanced styling and graphing
 from openpyxl.styles import Alignment, PatternFill, Font, Border, Side, numbers 
 from openpyxl.chart import LineChart, Reference
+# Add Series import for robust chart creation
+from openpyxl.chart.series import Series 
 
 # --- Configuration ---
 POWER_COL_OUT = 'PSumW'
@@ -280,8 +282,9 @@ def build_output_excel(sheets_dict):
                 title = Reference(ws, min_col=header_col_idx, min_row=1, 
                                   max_col=header_col_idx, max_row=1)
                 
-                # Add series, titles_from_data is needed to use the date string as the series name
-                chart.add_series(values, title_from_data=title)
+                # Use explicit Series creation and append to avoid the runtime error
+                series = Series(values, title=title)
+                chart.series.append(series)
 
             # Set Axis Titles
             chart.x_axis.title = "10-Minute Interval"
