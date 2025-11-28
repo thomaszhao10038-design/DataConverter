@@ -114,6 +114,9 @@ def build_output_excel(sheets_dict):
     thin_border = Border(left=Side(style='thin'), right=Side(style='thin'),
                              top=Side(style='thin'), bottom=Side(style='thin'))
 
+    # Dictionary to aggregate daily max power for the final "Total" sheet
+    total_summary_data = {}
+
     for sheet_name, df in sheets_dict.items():
         ws = wb.create_sheet(sheet_name)
         dates = sorted(df["Date"].unique())
@@ -182,6 +185,13 @@ def build_output_excel(sheets_dict):
             ws.cell(row=stats_row_start+2, column=col_start+3, value=max_kw)
 
             max_row_used = max(max_row_used, stats_row_start+2)
+            
+            # Aggregate Daily Max kW for the "Total" summary sheet
+            if date not in total_summary_data:
+                total_summary_data[date] = {}
+            total_summary_data[date][sheet_name] = max_kw
+            
+            # Daily Max Summary for individual sheet's table (uses date_str_short)
             daily_max_summary.append((date_str_short, max_kw))
 
             col_start += 4
@@ -192,30 +202,23 @@ def build_output_excel(sheets_dict):
             chart.title = f"Daily 10-Minute Absolute Power Profile - {sheet_name}"
             
             # --- Chart Size Adjustment (Approx. 7.37" H x 19.68" W) ---
-            # Dimensions requested by user are set here.
             chart.height = 7.37 
             chart.width = 19.68 
 
             # --- Y-Axis Configuration (kW) ---
             chart.y_axis.title = "kW"
-            # Start Y-axis at zero
             chart.y_axis.scaling.min = 0 
-            # Interval is auto-determined by Excel since majorUnit is not set.
             
             # --- X-Axis Configuration (Time) ---
             chart.x_axis.title = "Time"
-            # Interval is auto-determined by Excel since majorUnit is not set.
-            # Display time in H:MM format
             chart.x_axis.numberFormat = 'h:mm' 
 
             max_rows = max(day_intervals)
-            # Find the starting column for the first date's time stamps
             first_time_col = 2
             categories_ref = Reference(ws, min_col=first_time_col, min_row=3, max_row=2+max_rows)
 
             col_start = 1
             for n_rows in day_intervals:
-                # Reference for data (kW column)
                 data_ref = Reference(ws, min_col=col_start+3, min_row=3, max_row=2+n_rows)
                 chart.add_data(data_ref, titles_from_data=False)
                 col_start += 4
@@ -223,7 +226,7 @@ def build_output_excel(sheets_dict):
             chart.set_categories(categories_ref)
             ws.add_chart(chart, f'G{max_row_used+2}')
 
-        # Add Daily Max Summary Table
+        # Add Daily Max Summary Table (Individual Sheet)
         if daily_max_summary:
             start_row = max_row_used + 22
             ws.cell(row=start_row, column=1, value="Daily Max Power (kW) Summary").font = title_font
@@ -241,9 +244,63 @@ def build_output_excel(sheets_dict):
             ws.column_dimensions['A'].width = 15
             ws.column_dimensions['B'].width = 15
 
+    # --- NEW LOGIC: CREATE TOTAL SUMMARY SHEET ---
+    if total_summary_data:
+        # Convert aggregated data to a structured DataFrame for easy manipulation
+        total_summary_df = pd.DataFrame.from_dict(total_summary_data, orient='index')
+        total_summary_df.index.name = 'Date'
+        total_summary_df = total_summary_df.reset_index()
+        
+        # Calculate "Total Load" (sum of daily maxes across all sheets)
+        sheet_columns = [col for col in total_summary_df.columns if col != 'Date']
+        total_summary_df['Total Load'] = total_summary_df[sheet_columns].sum(axis=1, skipna=True)
+
+        # Reorder columns: Date, Sheet1, Sheet2, ..., Total Load
+        total_summary_df = total_summary_df[['Date'] + sheet_columns + ['Total Load']]
+        
+        # Create the "Total" sheet
+        ws_total = wb.create_sheet("Total")
+        
+        # Write headers
+        headers = ["Date"] + sheet_columns + ["Total Load"]
+        ws_total.append(headers)
+        
+        # Apply header formatting
+        for cell in ws_total[1]:
+            cell.fill = header_fill
+            cell.font = title_font
+            
+        # Write data rows
+        row_num = 2
+        for r in total_summary_df.itertuples(index=False):
+            # Column 1: Date
+            ws_total.cell(row=row_num, column=1, value=r.Date.strftime('%Y-%m-%d'))
+            
+            # Write sheet data (daily max power)
+            for i, sheet_name in enumerate(sheet_columns):
+                # Data is accessed by attribute name (which is the sheet name)
+                value = getattr(r, sheet_name)
+                cell = ws_total.cell(row=row_num, column=2 + i, value=value)
+                cell.number_format = numbers.FORMAT_NUMBER_00
+                
+            # Write Total Load (Last column)
+            # Use _asdict to safely access the "Total Load" column name
+            total_load_cell = ws_total.cell(row=row_num, column=len(headers), value=r._asdict()['Total Load'])
+            total_load_cell.number_format = numbers.FORMAT_NUMBER_00
+            total_load_cell.font = Font(bold=True) # Highlight total load
+            
+            row_num += 1
+
+        # Adjust column widths for the Total sheet
+        ws_total.column_dimensions['A'].width = 15
+        for i in range(1, len(headers)):
+            ws_total.column_dimensions[numbers.get_column_letter(i + 1)].width = 18
+
+    # --- END NEW LOGIC ---
+
     stream = BytesIO()
     # Remove the default empty sheet created automatically if it's still there
-    if 'Sheet' in wb.sheetnames and len(wb.sheetnames) > len(sheets_dict):
+    if 'Sheet' in wb.sheetnames and len(wb.sheetnames) > len(sheets_dict) + (1 if total_summary_data else 0):
         wb.remove(wb['Sheet'])
         
     wb.save(stream)
