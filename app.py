@@ -30,7 +30,7 @@ def process_sheet(df, timestamp_col, psum_col):
     
     # 2. Aggregate Data (Fixed Logic)
     
-    df[psum_col] = df[psum_col].abs()
+    # REMOVED: df[psum_col] = df[psum_col].abs() to preserve the sign (positive/negative)
     
     df_indexed = df.set_index(timestamp_col)
     
@@ -142,11 +142,11 @@ def build_output_excel(sheets_dict):
                 # Column 2: Local Time Stamp (col_start + 1)
                 ws.cell(row=idx, column=col_start+1, value=r.Time) 
                 
-                # Column 3: Active Power (W) (col_start + 2)
+                # Column 3: Active Power (W) (col_start + 2) - This value now retains its sign.
                 power_w = getattr(r, POWER_COL_OUT)
                 ws.cell(row=idx, column=col_start+2, value=power_w)
                 
-                # Column 4: kW (W / 1000) (col_start + 3)
+                # Column 4: kW (W / 1000) (col_start + 3) - This value now retains its sign.
                 ws.cell(row=idx, column=col_start+3, value=power_w / 1000)
 
             col_start += 4
