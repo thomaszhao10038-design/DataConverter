@@ -51,6 +51,11 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     # Drop rows where timestamp conversion failed (resulted in NaT)
     df = df.dropna(subset=[TIMESTAMP_COL]).sort_values(by=TIMESTAMP_COL).reset_index(drop=True)
     
+    # FIX: Ensure Power column is numeric before aggregation
+    # Coerce non-numeric values to NaN, and then drop rows with NaN in the power column
+    df[POWER_COL_IN] = pd.to_numeric(df[POWER_COL_IN], errors='coerce')
+    df = df.dropna(subset=[POWER_COL_IN])
+    
     # Set the valid timestamp column as the index for resampling
     df_indexed = df.set_index(TIMESTAMP_COL)
 
@@ -78,7 +83,7 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
             continue
 
         # Resample the PSum (W) column to 10-minute intervals. 
-        # Sum is used for aggregation.
+        # Sum is used for aggregation, matching the requirement (00:00:00 up to 00:09:59...).
         resampled_series = day_group[POWER_COL_IN].resample(
             '10min', 
             label='left', 
@@ -101,10 +106,11 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         # Calculate derived metrics and set the required output columns
         final_daily_output['UTC Offset (minutes)'] = date.strftime('%Y-%m-%d')
         
-        # FIX APPLIED: Use a list comprehension to call strftime on each element 
+        # Use a list comprehension to call strftime on each element 
         # of the Index to correctly generate the time stamps.
         final_daily_output['Local Time Stamp'] = [t.strftime('%H:%M') for t in final_daily_output.index]
 
+        # These columns should now be filled because Active Power (W) is numeric
         final_daily_output['kW'] = final_daily_output['Active Power (W)'].abs() / 1000
         
         # Final column selection and naming convention
