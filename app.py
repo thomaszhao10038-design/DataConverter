@@ -73,6 +73,11 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     
     # 5. Drop rows where power value is invalid (NaN)
     df = df.dropna(subset=[POWER_COL_IN])
+
+    # Diagnostic Check: If the aggressive cleanup failed for all rows, inform the user.
+    if df.empty:
+        st.error(f"Sheet **{sheet_name}**: After cleaning and ensuring numeric power values, the DataFrame is empty. This suggests all power values in the '{POWER_COL_IN}' column were non-numeric or malformed. Please verify the raw data.")
+        return pd.DataFrame()
     
     # Set the valid timestamp column as the index for resampling
     df_indexed = df.set_index(TIMESTAMP_COL)
@@ -102,6 +107,7 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
 
         # Resample the PSum (W) column to 10-minute intervals. 
         # Sum is used for aggregation, matching the requirement (00:00:00 up to 00:09:59...).
+        # This aggregates all instantaneous power readings within the 10-minute window.
         resampled_series = day_group[POWER_COL_IN].resample(
             '10min', 
             label='left', 
@@ -123,6 +129,7 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         
         # CRITICAL FIX: Replace NaN values (periods with no readings) with 0, 
         # as the requirement is to register 0 power use if no instantaneous data exists.
+        # This ensures periods where the input file had no readings for 10 minutes are set to 0 W.
         final_daily_output['Active Power (W)'] = final_daily_output['Active Power (W)'].fillna(0)
         
         # Calculate derived metrics and set the required output columns
