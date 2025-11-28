@@ -11,21 +11,17 @@ from openpyxl.styles import Alignment
 def round_to_10min(ts):
     if pd.isna(ts):
         return ts
-
     ts = pd.to_datetime(ts)
     m = ts.minute
     r = m % 10
-
     if r < 5:
         new_m = m - r
     else:
         new_m = m + (10 - r)
-
     if new_m == 60:
         ts = ts.replace(minute=0) + pd.Timedelta(hours=1)
     else:
         ts = ts.replace(minute=new_m)
-
     return ts.replace(second=0, microsecond=0)
 
 # -----------------------------
@@ -39,8 +35,18 @@ def process_sheet(df, timestamp_col, psum_col):
     df["Date"] = df["Rounded"].dt.date
     df["Time"] = df["Rounded"].dt.strftime("%H:%M:%S")
 
-    # Group by bucket
-    grouped = df.groupby(["Date", "Time"])[psum_col].sum().reset_index()
+    # Create all possible 10-min intervals for each date
+    all_days = df["Date"].unique()
+    all_intervals = pd.date_range("00:00", "23:50", freq="10min").time
+    rows = []
+    for d in all_days:
+        day_data = df[df["Date"] == d].set_index("Time")
+        for t in all_intervals:
+            t_str = t.strftime("%H:%M:%S")
+            val = day_data[psum_col].get(t_str, 0) if t_str in day_data.index else 0
+            rows.append({"Date": d, "Time": t_str, "PSum (W)": val})
+
+    grouped = pd.DataFrame(rows)
     return grouped
 
 # -----------------------------
@@ -48,47 +54,35 @@ def process_sheet(df, timestamp_col, psum_col):
 # -----------------------------
 def build_output_excel(sheets_dict):
     wb = Workbook()
-    wb.remove(wb.active)  # remove default sheet
+    wb.remove(wb.active)
 
     for sheet_name, df in sheets_dict.items():
         ws = wb.create_sheet(sheet_name)
-
         dates = sorted(df["Date"].unique())
-        start_row = 2
 
-        # Write headers for each day
         col_start = 1
         for date in dates:
-            ws.merge_cells(
-                start_row=1, start_column=col_start, end_row=1, end_column=col_start+3
-            )
+            # Merge date header
+            ws.merge_cells(start_row=1, start_column=col_start, end_row=1, end_column=col_start+3)
             ws.cell(row=1, column=col_start, value=str(date))
             ws.cell(row=1, column=col_start).alignment = Alignment(horizontal="center")
 
+            # Sub-headers
             ws.cell(row=2, column=col_start, value="UTC Offset (minutes)")
             ws.cell(row=2, column=col_start+1, value="Local Time Stamp")
             ws.cell(row=2, column=col_start+2, value="Active Power (W)")
             ws.cell(row=2, column=col_start+3, value="kW")
 
-            # Extract this day's data
-            day_data = df[df["Date"] == date].copy()
-            day_data = day_data.sort_values("Time")
+            # Fill 10-min rows
+            day_data = df[df["Date"] == date].sort_values("Time")
+            for idx, r in enumerate(day_data.itertuples(), start=3):
+                ws.cell(row=idx, column=col_start, value=str(date))
+                ws.cell(row=idx, column=col_start+1, value=r.Time)
+                ws.cell(row=idx, column=col_start+2, value=r._3)  # PSum (W)
+                ws.cell(row=idx, column=col_start+3, value=r._3/1000)
 
-            row_ptr = 3
-            for _, r in day_data.iterrows():
-                ws.cell(row=row_ptr, column=col_start, value=str(date))
-                ws.cell(row=row_ptr, column=col_start+1, value=r["Time"])
-                ws.cell(row=row_ptr, column=col_start+2, value=r["PSum (W)"])
-                ws.cell(
-                    row=row_ptr,
-                    column=col_start+3,
-                    value=(r["PSum (W)"])/1000 if pd.notna(r["PSum (W)"]) else None
-                )
-                row_ptr += 1
+            col_start += 4  # next day block
 
-            col_start += 4  # next 4-column block
-
-    # Save to bytes
     stream = BytesIO()
     wb.save(stream)
     stream.seek(0)
@@ -110,44 +104,26 @@ if uploaded:
         st.write(f"Processing sheet: **{sheet_name}**")
         df = pd.read_excel(uploaded, sheet_name=sheet_name)
 
-        # -----------------------------
-        # AUTO-DETECT TIMESTAMP COLUMN
-        # -----------------------------
+        # Auto-detect timestamp column
         possible_time_cols = [
             "Date & Time", "Date&Time", "Date_Time",
             "Timestamp", "TimeStamp", "DateTime", "Date Time",
             "LocalTime", "Local Time", "TIME", "time", "datetime",
             "Date", "date", "ts"
         ]
-        timestamp_col = None
-        for col in df.columns:
-            if col.strip() in possible_time_cols:
-                timestamp_col = col
-                break
+        timestamp_col = next((col for col in df.columns if col.strip() in possible_time_cols), None)
         if timestamp_col is None:
-            st.error(
-                f"❌ No valid timestamp column found in sheet **{sheet_name}**.\n"
-                f"Available columns:\n{list(df.columns)}"
-            )
+            st.error(f"No valid timestamp column in sheet {sheet_name}. Columns: {list(df.columns)}")
             continue
 
-        # -----------------------------
-        # AUTO-DETECT PSUM COLUMN
-        # -----------------------------
+        # Auto-detect PSum column
         possible_psum_cols = [
             "PSum (W)", "Psum (W)", "psum", "PSum", "Psum",
             "Power", "Active Power", "ActivePower", "P (W)"
         ]
-        psum_col = None
-        for col in df.columns:
-            if col.strip() in possible_psum_cols:
-                psum_col = col
-                break
+        psum_col = next((col for col in df.columns if col.strip() in possible_psum_cols), None)
         if psum_col is None:
-            st.error(
-                f"❌ No valid power column found in sheet **{sheet_name}**.\n"
-                f"Available columns:\n{list(df.columns)}"
-            )
+            st.error(f"No valid PSum column in sheet {sheet_name}. Columns: {list(df.columns)}")
             continue
 
         processed = process_sheet(df, timestamp_col, psum_col)
@@ -155,10 +131,9 @@ if uploaded:
 
     if result_sheets:
         output_stream = build_output_excel(result_sheets)
-
         st.download_button(
             label="📥 Download Converted Excel",
             data=output_stream,
             file_name="Converted_Output.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
