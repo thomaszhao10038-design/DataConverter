@@ -182,7 +182,7 @@ def build_output_excel(sheets_dict):
             ws.cell(row=stats_row_start+2, column=col_start+3, value=max_kw)
 
             max_row_used = max(max_row_used, stats_row_start+2)
-            daily_max_summary.append((date_str_short, max_kw))
+            daily_max_summary.append((date_str_full, max_kw)) # Use full date string here for summary
 
             col_start += 4
 
@@ -199,10 +199,16 @@ def build_output_excel(sheets_dict):
             categories_ref = Reference(ws, min_col=first_time_col, min_row=3, max_row=2+max_rows)
 
             col_start = 1
-            for n_rows in day_intervals:
-                # Reference for data (kW column)
+            for i, n_rows in enumerate(day_intervals):
+                # Data Reference (kW column)
                 data_ref = Reference(ws, min_col=col_start+3, min_row=3, max_row=2+n_rows)
-                chart.add_data(data_ref, titles_from_data=False)
+                
+                # Title Reference: This refers to the merged date header in Row 1, Column col_start
+                title_ref = Reference(ws, min_col=col_start, min_row=1) 
+                
+                # *** MODIFICATION HERE: Set the title_from_data reference ***
+                chart.add_data(data_ref, titles_from_data=False, title_from_data=title_ref)
+                
                 col_start += 4
 
             chart.set_categories(categories_ref)
