@@ -188,12 +188,16 @@ def build_output_excel(sheets_dict):
             valid_kw = day_data['kW'].dropna()
             valid_w = day_data[POWER_COL_OUT].dropna()
             
-            sum_w = valid_w.sum()
-            mean_w = valid_w.mean()
-            max_w = valid_w.max() if not valid_w.empty else 0
-            sum_kw = valid_kw.sum()
-            mean_kw = valid_kw.mean()
-            max_kw = valid_kw.max() if not valid_kw.empty else 0
+            # Check if series are empty before calculating stats to avoid passing NaN for mean
+            series_not_empty_w = not valid_w.empty
+            sum_w = valid_w.sum() if series_not_empty_w else 0.0
+            mean_w = valid_w.mean() if series_not_empty_w else 0.0
+            max_w = valid_w.max() if series_not_empty_w else 0.0
+            
+            series_not_empty_kw = not valid_kw.empty
+            sum_kw = valid_kw.sum() if series_not_empty_kw else 0.0
+            mean_kw = valid_kw.mean() if series_not_empty_kw else 0.0
+            max_kw = valid_kw.max() if series_not_empty_kw else 0.0
             
             ws.cell(row=stats_row_start, column=col_start+1, value="Total")
             ws.cell(row=stats_row_start, column=col_start+2, value=sum_w)
@@ -214,7 +218,7 @@ def build_output_excel(sheets_dict):
             # We use the max_n_rows to ensure the category reference covers the whole 24h span
             if categories_ref is None:
                 # Use the Local Time Stamp column (col_start + 1) for the full range
-                categories_ref = Reference(ws, min_col=2, min_row=3, max_row=2+max_n_rows)
+                categories_ref = Reference(ws, min_col=col_start+1, min_row=3, max_row=2+max_n_rows)
             
             # The data series (Y values) are the kW values (column +3)
             # The data reference only needs to cover the rows used for this day
