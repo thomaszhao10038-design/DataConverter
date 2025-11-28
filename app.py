@@ -212,7 +212,7 @@ def build_output_excel(sheets_dict):
                 # Collect data for final summary table using short date format
                 daily_max_summary.append((date_str_short, max_kw_abs))
                 
-                # --- Chart Data Tracking ---
+                # --- Chart Data Tracking (FIXED SERIES CREATION) ---
                 # The first day's Local Time Stamp column provides the categories (x-axis)
                 if chart_categories_ref is None:
                     # Categories start at row 3, column col_start + 1 (Local Time Stamp)
@@ -222,8 +222,12 @@ def build_output_excel(sheets_dict):
                 # Data starts at row 3, column col_start + 3 (kW)
                 data_ref = Reference(ws, min_col=col_start + 3, min_row=merge_start_row, max_row=merge_end_row, max_col=col_start + 3)
                 
-                # Create a Series object for this day's data
-                series = Series(data_ref, title=date_str_short)
+                # NEW: Create a Reference for the series title (the merged date header in Row 1)
+                title_ref = Reference(ws, min_col=col_start, min_row=1)
+                
+                # Create the Series object using the values data reference and the title reference
+                # This uses the official Reference object for the title, avoiding potential string argument type errors.
+                series = Series(data_ref, title=title_ref)
                 chart_data_refs.append(series)
 
 
