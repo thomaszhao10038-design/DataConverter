@@ -1,199 +1,263 @@
+# app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-import io
+from io import BytesIO
+from datetime import datetime, timedelta, time
+from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
+from openpyxl.styles import Font, Alignment
+from openpyxl.writer.excel import save_virtual_workbook
 
-st.set_page_config(page_title="Power Data Converter", layout="wide")
-st.title("📊 Power Data to Daily 4-Column Excel Converter")
+st.set_page_config(page_title="DataConverter - Excel 10-min aggregator", layout="wide")
+
+st.title("DataConverter — Excel → 10-min daily layout")
+st.caption("Takes an input .xlsx (one or more sheets). For each sheet it produces a sheet where each day occupies 4 columns: "
+           "`UTC Offset (minutes)`, `Local Time Stamp`, `Active Power (W)`, `kW`. Dates are shown as merged headers above each day's 4 columns.")
+
 st.markdown("""
-Upload one or more `.xlsx` files.  
-Each sheet will be processed independently and returned in a single output file with:
-- 4 columns per day (starting from column A, E, I, ...)
-- Merged date headers for same days
-- 10-minute intervals (00:00 → 23:50)
-- Active Power (W) = sum of instantaneous PSum (W) in that 10-min bin
-- kW column = Active Power (W) / 1000
+**Behavior & assumptions**
+- The app tries to detect a datetime column (common names: timestamp, datetime, date, time). If multiple parseable columns exist, the first parseable column is used.
+- The app tries to detect the power column by name (contains `'psum'` or `'p_sum'` or `'power'`) — case-insensitive. If not found, the user may select it manually from a dropdown.
+- 10-minute bins: timestamps are floored to nearest **lower** 10-minute (e.g. 12:12:01 → 12:10:00). Values in the same bin are **summed**.
+- For each day (calendar day, local timestamps), the sheet will have 144 rows (00:00 to 23:50, every 10 minutes).
+- `UTC Offset (minutes)` column will contain the date string (YYYY-MM-DD) extracted from the input file (per your instruction).
 """)
 
-uploaded_files = st.file_uploader(
-    "Upload Excel files (.xlsx)", type=["xlsx"], accept_multiple_files=True
-)
+uploaded_file = st.file_uploader("Upload input Excel (.xlsx)", type=["xlsx"], accept_multiple_files=False)
 
-if not uploaded_files:
-    st.info("Please upload at least one Excel file.")
-    st.stop()
-
-@st.cache_data
-def process_file(file):
-    xls = pd.ExcelFile(file)
-    output_sheets = {}
-
-    for sheet_name in xls.sheet_names:
-        df = pd.read_excel(xls, sheet_name=sheet_name)
-
-        # === Expected columns (adjust if your column names differ slightly) ===
-        if "PSum (W)" not in df.columns:
-            st.error(f"Sheet '{sheet_name}' in {file.name} does not have 'PSum (W)' column.")
+def guess_datetime_column(df: pd.DataFrame):
+    # Try common name matches first
+    candidates = []
+    names = list(df.columns)
+    lowers = [c.lower() for c in names]
+    for want in ["timestamp", "date time", "datetime", "date", "time", "local timestamp", "local time stamp", "localtime", "ts"]:
+        for i, c in enumerate(lowers):
+            if want in c:
+                candidates.append(names[i])
+    # fallback: any column that can parse as datetime
+    for col in names:
+        if col in candidates:
+            return col
+    # try parsing each column quickly
+    for col in names:
+        try:
+            parsed = pd.to_datetime(df[col], errors='coerce')
+            if parsed.notna().sum() > 0.5 * len(parsed):  # >50% parseable
+                return col
+        except Exception:
             continue
+    return None
 
-        # Try to find timestamp column (common names)
-        time_col = None
-        for col in ["Local Time Stamp", "Time", "Timestamp", "DateTime", "LocalTime"]:
-            if col in df.columns:
-                time_col = col
-                break
-        if time_col is None:
-            st.error(f"Could not find timestamp column in sheet '{sheet_name}'")
-            continue
+def guess_power_column(df: pd.DataFrame):
+    names = list(df.columns)
+    lowers = [c.lower() for c in names]
+    for i,c in enumerate(lowers):
+        if "psum" in c or "p_sum" in c or "p sum" in c or ("power" in c and "active" in c) or "kw" in c and "w" in c:
+            return names[i]
+    # if none match, choose numeric column with most non-null numeric values
+    numeric_cols = []
+    for col in names:
+        # try convert to numeric
+        coerced = pd.to_numeric(df[col], errors='coerce')
+        nonnull = coerced.notna().sum()
+        if nonnull > 0:
+            numeric_cols.append((col, nonnull))
+    if numeric_cols:
+        # return the column with the highest numeric count
+        return sorted(numeric_cols, key=lambda x: x[1], reverse=True)[0][0]
+    return None
 
-        df[time_col] = pd.to_datetime(df[time_col], errors='coerce')
-        df = df.dropna(subset=[time_col])  # remove invalid timestamps
+def floor_to_10min(ts):
+    # pandas floor function is easiest, but accept datetime
+    return pd.to_datetime(ts).floor('10T')
 
-        # Extract UTC offset if available (optional)
-        utc_offset_col = None
-        for col in ["UTC Offset", "UTC Offset (minutes)", "Offset"]:
-            if col in df.columns:
-                utc_offset_col = col
-                break
+def process_sheet(df: pd.DataFrame, datetime_col: str, power_col: str):
+    df = df.copy()
+    # parse datetime
+    df['__dt_parsed'] = pd.to_datetime(df[datetime_col], errors='coerce')
+    df = df.dropna(subset=['__dt_parsed'])
+    # floor to 10-minute
+    df['__dt_floor'] = df['__dt_parsed'].dt.floor('10T')
+    # date key (calendar date)
+    df['__date'] = df['__dt_floor'].dt.date
+    # numeric power
+    df['__power_w'] = pd.to_numeric(df[power_col], errors='coerce')
+    # sum power in same floored timestamp
+    grouped = df.groupby(['__date', '__dt_floor'], as_index=False)['__power_w'].sum()
 
-        # Create 10-minute bins
-        df["bin_start"] = df[time_col].dt.floor('10min')
+    # build dict: date -> { time -> sum }
+    data_by_date = {}
+    for date, g in grouped.groupby('__date'):
+        # create mapping from time only (HH:MM:SS) or full datetime?
+        # We'll map to times (time) for easier insertion into 00:00..23:50
+        times = pd.to_datetime(g['__dt_floor']).dt.time
+        sums = g['__power_w'].values
+        data_by_date[date] = {t: s for t, s in zip(times, sums)}
 
-        # Group by date and 10-min bin
-        grouped = df.groupby([
-            df["bin_start"].dt.date,
-            df["bin_start"].dt.time
-        ])["PSum (W)"].sum().reset_index()
-        grouped.rename(columns={"bin_start": "time"}, inplace=True)
+    return data_by_date
 
-        # Create full 10-min grid for each day present
-        dates = sorted(grouped["date"].unique())
-        all_times = [datetime(2000,1,1, h, m) for h in range(24) for m in (0,10,20,30,40,50)]
-        time_labels = [t.strftime("%H:%M") for t in all_times]
+def build_excel_bytes(data_by_sheet):
+    """
+    data_by_sheet: dict of sheet_name -> dict(date -> {time->value})
+    """
+    wb = Workbook()
+    # remove the default sheet created by Workbook
+    default = wb.active
+    wb.remove(default)
 
-        final_data = []
-        date_objects = []
+    for sheet_name, date_map in data_by_sheet.items():
+        ws = wb.create_sheet(title=sheet_name[:31])  # Excel sheet name limit
 
-        for date in dates:
-            day_data = grouped[grouped["date"] == date]
-            power_dict = dict(zip(zip(day_data["date"], day_data["time"]), day_data["PSum (W)"]))
+        # sort dates ascending
+        dates = sorted(date_map.keys())
 
-            row_power = []
-            for t in all_times:
-                key = (date, t.time())
-                row_power.append(power_dict.get(key, None))
+        # header row 1: per-day merged date header (merge over 4 columns each)
+        # header row 2: subheaders for each day's 4 columns
+        subheaders = ["UTC Offset (minutes)", "Local Time Stamp", "Active Power (W)", "kW"]
+        # write merged date headers across 4 columns each
+        col_index = 1
+        for d in dates:
+            start_col = col_index
+            end_col = col_index + 3
+            start_letter = get_column_letter(start_col)
+            end_letter = get_column_letter(end_col)
+            # Merge and write date string (use YYYY-MM-DD)
+            date_str = d.isoformat()
+            ws.merge_cells(f"{start_letter}1:{end_letter}1")
+            cell = ws[f"{start_letter}1"]
+            cell.value = date_str
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            # write subheaders in row 2
+            for i, sh in enumerate(subheaders):
+                ws.cell(row=2, column=col_index + i, value=sh).font = Font(bold=True)
+            col_index += 4
 
-            final_data.append(row_power)
-            date_objects.append(date)
+        # Now rows: times 00:00:00 to 23:50:00, step 10 minutes -- 144 rows
+        times = []
+        cur = datetime.combine(datetime.today(), time(0,0))
+        for i in range(144):
+            times.append((cur.time()))
+            cur = cur + timedelta(minutes=10)
 
-        # Build output DataFrame for this sheet
-        columns_per_day = 4
-        total_days = len(dates)
-        total_cols = total_days * columns_per_day
+        # Starting from row 3, we write each time row
+        start_row = 3
+        for row_idx, t in enumerate(times):
+            ws.row_dimensions[start_row + row_idx].height = 18
+            col_index = 1
+            for d in dates:
+                # UTC Offset (minutes) column: user asked "this shows the date (search and extract from the input file**)"
+                # We'll place the date string (YYYY-MM-DD) in this column (repeated per row). The date is already merged header but user requested date - keep for clarity.
+                utc_cell = ws.cell(row=start_row + row_idx, column=col_index)
+                utc_cell.value = d.isoformat()    # follows instruction to show date; if you want offset change later
+                # Local Time Stamp column: full local timestamp (YYYY-MM-DD HH:MM:SS)
+                ts_cell = ws.cell(row=start_row + row_idx, column=col_index + 1)
+                local_dt = datetime.combine(d, t)
+                # Format as ISO-like string without timezone
+                ts_cell.value = local_dt.strftime("%Y-%m-%d %H:%M:%S")
+                # Active Power (W)
+                ap_cell = ws.cell(row=start_row + row_idx, column=col_index + 2)
+                # lookup in data_by_sheet
+                v = date_map.get(d, {}).get(t, None)
+                if v is None or (isinstance(v, float) and np.isnan(v)):
+                    ap_cell.value = None
+                else:
+                    # if value is nearly integer, cast to int, else keep float
+                    if float(v).is_integer():
+                        ap_cell.value = int(v)
+                    else:
+                        ap_cell.value = float(round(v, 6))
+                # kW: absolute value / 1000
+                kw_cell = ws.cell(row=start_row + row_idx, column=col_index + 3)
+                if ap_cell.value is None:
+                    kw_cell.value = None
+                else:
+                    try:
+                        kw_value = abs(float(ap_cell.value)) / 1000.0
+                        # write with 6 decimal places if needed
+                        kw_cell.value = float(round(kw_value, 6))
+                    except Exception:
+                        kw_cell.value = None
+                col_index += 4
 
-        # Create multi-level columns
-        arrays = []
-        for i, date in enumerate(dates):
-            dt = pd.to_datetime(date)
-            date_str = dt.strftime("%Y-%m-%d")
-            arrays.append([date_str, date_str, date_str, date_str])
+        # optional: auto-width (simple)
+        max_col = (len(dates) * 4)
+        for col in range(1, max_col+1):
+            ws.column_dimensions[get_column_letter(col)].width = 18
 
-        arrays.append(["UTC Offset (minutes)", "Local Time Stamp", "Active Power (W)", "kW"])
+    # return bytes
+    return save_virtual_workbook(wb)
 
-        tuples = list(zip(*arrays)) if total_days > 0 else []
-        multi_cols = pd.MultiIndex.from_tuples(tuples)
+if uploaded_file is not None:
+    try:
+        # read excel with pandas - preserve sheet names
+        excel = pd.ExcelFile(uploaded_file)
+        sheet_names = excel.sheet_names
 
-        # Output DataFrame
-        out_df = pd.DataFrame(index=range(len(time_labels)), columns=multi_cols)
+        st.write(f"Found sheets: {sheet_names}")
 
-        # Fill time labels and data
-        for i, time_label in enumerate(time_labels):
-            out_df.loc[i, (slice(None), "Local Time Stamp")] = time_label
+        # Let user optionally pick columns if automatic detection fails
+        user_confirm_cols = {}
 
-        for day_idx, date in enumerate(dates):
-            base_col = day_idx * 4
-            power_col = out_df.columns[base_col + 2]   # Active Power (W)
-            kw_col = out_df.columns[base_col + 3]      # kW
+        data_by_sheet = {}
+        for sheet in sheet_names:
+            st.subheader(f"Sheet: {sheet}")
+            df = pd.read_excel(excel, sheet_name=sheet)
+            if df.empty:
+                st.warning(f"Sheet '{sheet}' is empty — skipping.")
+                continue
 
-            for row_idx, power in enumerate(final_data[day_idx]):
-                if power is not None and pd.notna(power):
-                    out_df.iat[row_idx, power_col[0]*4 + power_col[1]] = int(power) if power == int(power) else power
-                    out_df.iat[row_idx, kw_col[0]*4 + kw_col[1]] = round(power / 1000, 3)
+            # try guess
+            dt_guess = guess_datetime_column(df)
+            pw_guess = guess_power_column(df)
 
-            # Fill UTC Offset if we have it
-            if utc_offset_col is not None:
-                offset_val = df[utc_offset_col].iloc[0] if len(df[utc_offset_col].dropna()) > 0 else ""
-                offset_col = out_df.columns[base_col]
-                out_df[offset_col] = offset_val
+            cols_display = df.columns.tolist()
+            st.write("Columns detected:", cols_display)
 
-        # Reorder columns properly (pandas sometimes messes order)
-        ordered_cols = []
-        for i in range(total_days):
-            start = i * 4
-            ordered_cols.extend(out_df.columns[start:start+4])
-        out_df = out_df[ordered_cols]
+            # Show guesses and allow manual override
+            st.write(f"Auto-detected datetime column: `{dt_guess}`")
+            st.write(f"Auto-detected power column: `{pw_guess}`")
 
-        output_sheets[sheet_name] = out_df
+            dt_col = dt_guess
+            pw_col = pw_guess
+            # If any guess is None, allow user to select
+            if dt_col is None or pw_col is None:
+                with st.form(key=f"manual_cols_{sheet}"):
+                    dt_col = st.selectbox("Choose datetime column", options=[None] + cols_display, index=0 if dt_col is None else cols_display.index(dt_col)+1)
+                    pw_col = st.selectbox("Choose power column (PSum W)", options=[None] + cols_display, index=0 if pw_col is None else cols_display.index(pw_col)+1)
+                    submitted = st.form_submit_button("Use these columns")
+                    if submitted:
+                        pass  # proceed
+            # final check
+            if dt_col is None or pw_col is None:
+                st.error(f"Could not determine datetime or power column for sheet `{sheet}` — skipping this sheet. Please ensure the sheet contains a datetime column and a numeric power column.")
+                continue
 
-    return output_sheets
+            # Process
+            try:
+                date_map = process_sheet(df, datetime_col=dt_col, power_col=pw_col)
+                if len(date_map) == 0:
+                    st.warning(f"No parseable timestamps found in sheet `{sheet}`. Skipping.")
+                    continue
+                data_by_sheet[sheet] = date_map
+                st.success(f"Processed sheet `{sheet}` — found {len(date_map)} distinct dates.")
+            except Exception as e:
+                st.error(f"Error processing sheet `{sheet}`: {e}")
+                continue
 
-if st.button("🚀 Process All Files"):
-    with st.spinner("Processing files..."):
-        all_sheets = {}
-        for file in uploaded_files:
-            sheets = process_file(file)
-            for name, df in sheets.items():
-                new_name = f"{file.name}_{name}"
-                all_sheets[new_name] = df
+        if len(data_by_sheet) == 0:
+            st.warning("No sheets processed. Upload a valid .xlsx and ensure each sheet has a datetime column and a PSum (W) column.")
+        else:
+            st.info("Building output Excel...")
+            out_bytes = build_excel_bytes(data_by_sheet)
+            st.success("Output ready — click to download.")
 
-        if not all_sheets:
-            st.error("No valid data was processed.")
-            st.stop()
+            bname = uploaded_file.name.replace(".xlsx", "_converted.xlsx")
+            st.download_button(label="Download converted Excel", data=out_bytes, file_name=bname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-        # Write to Excel with merged headers
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            for sheet_name, df in all_sheets.items():
-                df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
+    except Exception as e:
+        st.error(f"Failed to read/process the uploaded Excel: {e}")
 
-                workbook = writer.book
-                worksheet = writer.sheets[sheet_name[:31]]
-
-                # Merge cells for same date headers
-                col_idx = 0
-                while col_idx < len(df.columns):
-                    date_group_start = col_idx
-                    current_date = df.columns[col_idx][0]
-
-                    while col_idx < len(df.columns) and df.columns[col_idx][0] == current_date:
-                        col_idx += 1
-
-                    if (col_idx - date_group_start) > 1:
-                        worksheet.merge_range(
-                            0, date_group_start, 0, col_idx - 1,
-                            current_date,
-                            workbook.add_format({'align': 'center', 'bold': True, 'bg_color': '#D9E1F2'})
-                        )
-
-                # Format headers row 2
-                header_format = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#A6A6A6'})
-                for col_num, value in enumerate(df.columns.get_level_values(1)):
-                    worksheet.write(1, col_num, value, header_format)
-
-                # Auto-fit columns
-                for i, col in enumerate(df.columns):
-                    max_len = max(
-                        df[col].astype(str).map(len).max(),
-                        len(str(col[1]))
-                    ) + 2
-                    worksheet.set_column(i, i, min(max_len, 30))
-
-        output.seek(0)
-        st.success("Processing complete!")
-        st.download_button(
-            label="📥 Download Converted Excel File",
-            data=output,
-            file_name=f"Converted_Power_Data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+else:
+    st.info("Upload an .xlsx file to begin.")
