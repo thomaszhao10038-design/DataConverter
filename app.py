@@ -275,8 +275,7 @@ def build_output_excel(sheets_dict):
             
         # Write data rows
         row_num = 2
-        # Use itertuples(index=False) which returns a named tuple. 
-        # Column access must be done carefully, ideally by position (index).
+        # Use itertuples(index=False) which returns a positional tuple.
         for r in total_summary_df.itertuples(index=False):
             # The tuple 'r' structure is: (Date, Sheet1_Max_kW, Sheet2_Max_kW, ..., Total_Load)
             
@@ -286,14 +285,13 @@ def build_output_excel(sheets_dict):
             # Write sheet data (daily max power) - Starts at index 1 in the tuple 'r'
             for i, sheet_name in enumerate(sheet_columns):
                 # Data is accessed by positional index (i+1, since 'Date' is at index 0 of the tuple)
-                # This fixes the AttributeError caused by spaces/special characters in sheet names.
                 value = r[i + 1] 
                 cell = ws_total.cell(row=row_num, column=2 + i, value=value)
                 cell.number_format = numbers.FORMAT_NUMBER_00
                 
             # Write Total Load (Last column)
-            # Use _asdict to safely access the "Total Load" column name
-            total_load_cell = ws_total.cell(row=row_num, column=len(headers), value=r._asdict()['Total Load'])
+            # FIX: Access the last element of the tuple 'r' using index -1
+            total_load_cell = ws_total.cell(row=row_num, column=len(headers), value=r[-1])
             total_load_cell.number_format = numbers.FORMAT_NUMBER_00
             total_load_cell.font = Font(bold=True) # Highlight total load
             
@@ -326,7 +324,7 @@ def app():
         
         **New Feature:** Leading and trailing zero values (representing missing readings) are now filtered out and appear blank, but zero values *within* the active recording period are kept.
         
-        The output Excel file includes a **line chart** and a **Max Power Summary table** for each day.
+        The output Excel file includes a **line chart** and a **Max Power Summary table** for each day, plus a new **Total** summary sheet.
     """)
 
     uploaded = st.file_uploader("Upload .xlsx file", type=["xlsx"])
