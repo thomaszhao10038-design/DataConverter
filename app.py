@@ -32,7 +32,6 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     st.info(f"Processing sheet: **{sheet_name}**...")
     
     # CRITICAL FIX: Clean column names by stripping whitespace to ensure reliable matching
-    # This addresses issues where headers in Excel have leading/trailing spaces.
     df.columns = df.columns.astype(str).str.strip()
 
     # 1. Input Validation and Preparation
@@ -65,7 +64,6 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     power_series = power_series.str.replace(',', '.', regex=False)
     
     # 3. AGGRESSIVE CLEANING: Remove everything that is NOT a digit, a period, or a minus sign.
-    # This removes hidden units, currency symbols, and other non-numeric garbage.
     power_series = power_series.str.replace(r'[^0-9\.\-]', '', regex=True)
 
     # 4. Coerce non-numeric values to NaN.
@@ -79,7 +77,7 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         st.error(f"Sheet **{sheet_name}**: After cleaning and ensuring numeric power values, the DataFrame is empty. This suggests all power values in the '{POWER_COL_IN}' column were non-numeric or malformed. Please verify the raw data.")
         return pd.DataFrame()
     
-    # NEW FIX: Take the absolute magnitude of instantaneous power (PSum (W)) readings.
+    # FIX: Take the absolute magnitude of instantaneous power (PSum (W)) readings.
     # This ensures that both consumption (positive) and generation/export (negative) readings 
     # contribute to the aggregation, preventing them from cancelling each other out.
     df[POWER_COL_IN] = df[POWER_COL_IN].abs()
@@ -110,14 +108,14 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         if day_group.empty:
             continue
 
-        # CRITICAL CHANGE: Switched from .sum() to .mean() for aggregation.
-        # This calculates the AVERAGE instantaneous power (W) over the 10-minute interval, 
-        # which is the correct output format for 'Active Power (W)' interval data.
+        # CRITICAL CHANGE: Using .sum() as requested ("total instantaneous power used")
+        # The absolute value of PSum (W) is taken earlier to prevent cancellation.
+        # This calculates the SUM of the instantaneous power magnitude over the 10-minute interval.
         resampled_series = day_group[POWER_COL_IN].resample(
             '10min', 
             label='left', 
             origin='start'
-        ).mean()
+        ).sum()
 
         # Create the daily output DataFrame using the resampled data
         daily_output = pd.DataFrame({
@@ -132,8 +130,7 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         # Re-index against the full 144-row template to fill missing intervals with NaN
         final_daily_output = template_df.join(daily_output, how='left')
         
-        # CRITICAL FIX: Replace NaN values (periods with no readings) with 0, 
-        # as the requirement is to register 0 power use if no instantaneous data exists.
+        # FIX: Replace NaN values (periods with no readings) with 0.
         final_daily_output['Active Power (W)'] = final_daily_output['Active Power (W)'].fillna(0)
         
         # Calculate derived metrics and set the required output columns
@@ -143,7 +140,8 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         # of the Index to correctly generate the time stamps.
         final_daily_output['Local Time Stamp'] = [t.strftime('%H:%M') for t in final_daily_output.index]
 
-        # The kW calculation is now simply the Active Power (W) average divided by 1000
+        # The kW calculation is the absolute Active Power (W) sum divided by 1000.
+        # Since Active Power (W) is already calculated from absolute input, we just divide.
         final_daily_output['kW'] = final_daily_output['Active Power (W)'] / 1000
         
         # Final column selection and naming convention
