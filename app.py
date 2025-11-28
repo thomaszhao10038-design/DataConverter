@@ -12,21 +12,31 @@ POWER_COL_OUT = 'PSumW'
 # -----------------------------
 # PROCESS SINGLE SHEET
 # -----------------------------
-def process_sheet(df, timestamp_col, psum_col):
+def process_sheet(df, date_col, time_col, psum_col):
     """
     Processes a single DataFrame sheet: cleans data, rounds timestamps to 10-minute intervals,
     filters out leading/trailing zero periods, and prepares data for Excel output.
     Periods outside the first and last non-zero reading are filled with NaN (blank) upon re-indexing.
+    
+    This version combines separate Date and Time columns into a single timestamp index.
     """
     df.columns = df.columns.astype(str).str.strip()
-    # Convert timestamp column, handling various date formats
-    df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce", dayfirst=True)
     
-    # Clean and convert power column (handle commas as decimal separators)
+    # 1. Combine Date and Time columns into a single timestamp string/series
+    # Create a temporary column that concatenates date and time
+    combined_dt_series = df[date_col].astype(str) + ' ' + df[time_col].astype(str)
+    
+    # Convert the combined string to datetime objects
+    # dayfirst=True is kept for robust parsing of date formats like dd/mm/yyyy
+    df['Timestamp'] = pd.to_datetime(combined_dt_series, errors="coerce", dayfirst=True)
+    timestamp_col = 'Timestamp'
+    
+    # 2. Clean and convert power column (handle commas as decimal separators)
     power_series = df[psum_col].astype(str).str.strip()
     power_series = power_series.str.replace(',', '.', regex=False)
     df[psum_col] = pd.to_numeric(power_series, errors='coerce')
     
+    # 3. Drop rows where we couldn't parse the timestamp or power value
     df = df.dropna(subset=[timestamp_col, psum_col])
     if df.empty:
         return pd.DataFrame()
@@ -79,8 +89,6 @@ def process_sheet(df, timestamp_col, psum_col):
     )
     
     # Reindex with the full index, filling missing slots with NaN (blank) instead of 0.
-    # This ensures periods before the first recorded activity and after the last recorded 
-    # activity are blank, while any legitimate 0s within the active period remain 0.
     df_indexed_for_reindex = df_out.set_index('Rounded')
     df_padded_series = df_indexed_for_reindex[POWER_COL_OUT].reindex(full_time_index) # Removed fill_value=0
     
@@ -344,6 +352,8 @@ def app():
     st.markdown("""
         Upload an **Excel file (.xlsx)** with time-series data. Each sheet is processed to calculate total absolute power (W) in 10-minute intervals. 
         
+        **Input Format Expected:** Separate columns for **Date**, **Time**, and **PSum (W)**.
+        
         **New Feature:** Leading and trailing zero values (representing missing readings) are now filtered out and appear blank, but zero values *within* the active recording period are kept.
         
         The output Excel file includes:
@@ -367,18 +377,23 @@ def app():
                 continue
 
             df.columns = df.columns.astype(str).str.strip()
-
-            timestamp_col = next((c for c in df.columns if c in ["Date & Time","Date&Time","Timestamp","DateTime","Local Time","TIME","ts"]), None)
-            if not timestamp_col:
-                st.error(f"No valid timestamp column in sheet '{sheet_name}' (expected: Date & Time, Timestamp, etc.)")
+            
+            # --- UPDATED COLUMN DETECTION ---
+            date_col = next((c for c in df.columns if c in ["Date","DATE","date"]), None)
+            time_col = next((c for c in df.columns if c in ["Time","TIME","time"]), None)
+            
+            if not date_col or not time_col:
+                st.error(f"No valid Date and/or Time column in sheet '{sheet_name}' (expected: Date, Time).")
                 continue
 
             psum_col = next((c for c in df.columns if c in ["PSum (W)","Psum (W)","PSum","P (W)","Power"]), None)
             if not psum_col:
-                st.error(f"No valid PSum column in sheet '{sheet_name}' (expected: PSum (W), Power, etc.)")
+                st.error(f"No valid PSum column in sheet '{sheet_name}' (expected: PSum (W), Power, etc.).")
                 continue
 
-            processed = process_sheet(df, timestamp_col, psum_col)
+            # --- UPDATED FUNCTION CALL ---
+            processed = process_sheet(df, date_col, time_col, psum_col)
+            
             if not processed.empty:
                 result_sheets[sheet_name] = processed
                 st.success(f"Sheet '{sheet_name}' processed successfully with {len(processed['Date'].unique())} day(s) of data.")
