@@ -75,7 +75,7 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     all_dates = df['Date'].dropna().unique()
     
     # Track column index for naming (A, E, I, ...)
-    current_col_index = 0
+    # current_col_index is unused, removed from previous version's comments
     
     for date in all_dates:
         # Filter data for the current day
@@ -92,7 +92,6 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         # but the content must be the date as per the prompt.
         day_data['UTC Offset (minutes)'] = date.strftime('%Y-%m-%d')
         
-        # Rename columns to maintain the repeating structure (e.g., A, B, C, D, A, B, C, D...)
         # Concatenate the current day's 4-column block to the final DataFrame
         final_df = pd.concat([final_df, day_data], axis=1)
 
@@ -128,11 +127,13 @@ def app():
             sheet_names = xls.sheet_names
             
             output_buffer = io.BytesIO()
+            all_processed_successfully = True
             
             # Use Pandas ExcelWriter to write processed data to multiple sheets in memory
-            with pd.ExcelWriter(output_buffer, engine='xlsxwriter') as writer:
-                all_processed_successfully = True
-                
+            # FIX APPLIED: Explicitly open/close the writer to guarantee data flush
+            writer = pd.ExcelWriter(output_buffer, engine='xlsxwriter')
+            
+            try:
                 for sheet_name in sheet_names:
                     # Read the current sheet
                     try:
@@ -151,25 +152,32 @@ def app():
                             writer, 
                             sheet_name=sheet_name, 
                             index=False,
-                            header=True # 'First row is the header row'
+                            header=True
                         )
                     elif df_out is None:
                         all_processed_successfully = False
 
-                if all_processed_successfully and sheet_names:
-                    # Prepare file for download
-                    st.download_button(
-                        label="Download Processed Excel File (.xlsx)",
-                        data=output_buffer.getvalue(),
-                        file_name="Converted_Energy_Data.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-                    st.balloons()
-                    st.info("The processed file is ready for download above!")
-                elif not sheet_names:
-                    st.warning("The uploaded file appears to be empty or has no sheets.")
-                else:
-                    st.error("Processing failed for one or more sheets. Please check the error messages above and ensure your input file format is correct.")
+            except Exception as e:
+                st.error(f"An error occurred during sheet processing: {e}")
+                all_processed_successfully = False
+            
+            # CRITICAL FIX: Explicitly close the writer to finalize the Excel file structure in the buffer
+            writer.close()
+
+            if all_processed_successfully and sheet_names:
+                # Prepare file for download
+                st.download_button(
+                    label="Download Processed Excel File (.xlsx)",
+                    data=output_buffer.getvalue(),
+                    file_name="Converted_Energy_Data.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                st.balloons()
+                st.info("The processed file is ready for download above!")
+            elif not sheet_names:
+                st.warning("The uploaded file appears to be empty or has no sheets.")
+            else:
+                st.error("Processing failed for one or more sheets. Please check the error messages above and ensure your input file format is correct.")
 
         except Exception as e:
             st.error(f"An unexpected error occurred during file processing: {e}")
