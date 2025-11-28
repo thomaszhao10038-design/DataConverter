@@ -22,10 +22,10 @@ def process_data_sheet(df, sheet_name):
         return None, None
 
     # Rename the PSum column and calculate kW
+    # Note: Renaming for consistency, but the original PSum (W) is used for kW calculation
     df = df.rename(columns={'PSum (W)': 'Active Power (W)'})
 
     # Convert 'Date & Time' to datetime objects (handling the DD/MM/YYYY HH:MM:SS format)
-    # Using 'coerce' turns unparseable dates into NaT (Not a Time)
     df['Date & Time'] = pd.to_datetime(df['Date & Time'], format='%d/%m/%Y %H:%M:%S', errors='coerce')
     
     # Drop rows where datetime parsing failed
@@ -41,60 +41,92 @@ def process_data_sheet(df, sheet_name):
     df['Local Time Stamp'] = df['Date & Time'].dt.strftime('%H:%M:%S')
 
     # Calculate kW: abs(Active Power (W)) / 1000
+    # Using absolute value based on the previous implementation for 'Book1' format
     df['kW'] = (df['Active Power (W)'] / 1000).abs()
 
     # Select columns and set 'Local Time Stamp' as index for the merge
+    # The columns are suffixed with a unique number (index) during merging in the main function
     df_processed = df[['Local Time Stamp', 'Active Power (W)', 'kW']]
     df_processed = df_processed.set_index('Local Time Stamp')
 
     return df_processed, date_str
 
-def create_excel_file(df1, date1, sheet_name1, df2, date2, sheet_name2):
-    """Merges the two processed DataFrames and creates the Excel file in Book1 format."""
-    
-    # Merge the two DataFrames on 'Local Time Stamp' (index)
-    # Using 'outer' to include all time stamps present in either sheet
-    merged_df = df1.merge(df2, left_index=True, right_index=True, how='outer', 
-                          suffixes=('_1', '_2'))
+def create_excel_file_multi(processed_sheets):
+    """
+    Merges all processed DataFrames on 'Local Time Stamp' and creates the final Excel file
+    with a dynamic multi-level header structure.
+    """
+    if not processed_sheets:
+        return None
 
-    # --- Create Multi-Level Header Structure ---
+    # 1. Merge all DataFrames based on the 'Local Time Stamp' index
+    # Start with an empty DataFrame whose index will hold all unique timestamps
+    merged_df = pd.DataFrame(index=pd.Index([], name='Local Time Stamp'))
     
-    # 1. Define the multi-level headers (as seen in Book1 sample)
-    # The top level uses the sheet name and data date
-    headers = [
-        ('UTC Offset (minutes)', ''), 
-        (f'{sheet_name1} ({date1})', 'Local Time Stamp'),
-        (f'{sheet_name1} ({date1})', 'Active Power (W)'), 
-        (f'{sheet_name1} ({date1})', 'kW'),
-        ('', ''), # Blank Separator Column
-        (f'{sheet_name2} ({date2})', 'Local Time Stamp'),
-        (f'{sheet_name2} ({date2})', 'Active Power (W)'), 
-        (f'{sheet_name2} ({date2})', 'kW')
-    ]
+    # Iterate through the dictionary of processed sheets and merge them sequentially
+    for sheet_id, data in processed_sheets.items():
+        df_to_merge = data['df']
+        # The merge uses the unique sheet_id (integer 1, 2, 3...) as the suffix
+        merged_df = merged_df.merge(df_to_merge, 
+                                    left_index=True, 
+                                    right_index=True, 
+                                    how='outer', 
+                                    suffixes=('_old', f'_{sheet_id}'))
+
+    # Sort the index (Local Time Stamp) to ensure chronological order
+    merged_df.sort_index(inplace=True)
+
+    # 2. Create Multi-Level Header Structure and Final DataFrame
     
+    # Define the first non-dynamic header group
+    headers = [('UTC Offset (minutes)', '')]
+    
+    # Dynamically generate headers for each sheet
+    for sheet_id, data in processed_sheets.items():
+        sheet_name = data['name']
+        date_str = data['date']
+        
+        # Add a blank separator column before the next sheet, unless it's the first sheet
+        if sheet_id > 1:
+            headers.append(('', '')) # Blank Separator Column
+
+        # Add the three columns for the current sheet
+        top_level = f'{sheet_name} ({date_str})'
+        headers.extend([
+            (top_level, 'Local Time Stamp'),
+            (top_level, 'Active Power (W)'), 
+            (top_level, 'kW')
+        ])
+
     multi_index = pd.MultiIndex.from_tuples(headers)
     output_df = pd.DataFrame(columns=multi_index)
 
-    # 2. Populate the DataFrame
-    # Note: Column names in merged_df are 'Active Power (W)_1', 'kW_1', 'Active Power (W)_2', 'kW_2'
+    # 3. Populate the Final DataFrame
     for index, row in merged_df.iterrows():
-        new_row = [
-            '',  # UTC Offset (minutes)
-            index,  # Local Time Stamp (1)
-            row.get('Active Power (W)_1', ''), # Use .get() and default to '' if missing
-            row.get('kW_1', ''),
-            '',  # Separator
-            index,  # Local Time Stamp (2)
-            row.get('Active Power (W)_2', ''),
-            row.get('kW_2', '')
-        ]
-        output_df.loc[len(output_df)] = new_row
-    
-    
-    # 3. Create the Excel file in memory
+        new_row = ['',] # Start with 'UTC Offset (minutes)' column (always blank)
+
+        for sheet_id, data in processed_sheets.items():
+            # Add blank separator column (if not the first sheet)
+            if sheet_id > 1:
+                new_row.append('')
+            
+            # The Local Time Stamp (index) is repeated for each sheet's time column
+            new_row.append(index)
+            
+            # Retrieve the processed data columns using the merge suffix
+            new_row.append(row.get(f'Active Power (W)_{sheet_id}', ''))
+            new_row.append(row.get(f'kW_{sheet_id}', ''))
+
+        # Ensure the row length matches the number of columns in the MultiIndex
+        if len(new_row) == len(output_df.columns):
+            output_df.loc[len(output_df)] = new_row
+        else:
+            st.error(f"Internal error: Row size mismatch for timestamp {index}. Skipping row.")
+
+    # 4. Create the Excel file in memory
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Note: index=False to prevent writing a default index
+        # Note: startrow=0 includes the multi-level headers
         output_df.to_excel(writer, sheet_name='Consolidated', index=False, startrow=0)
     
     return output.getvalue()
@@ -102,7 +134,7 @@ def create_excel_file(df1, date1, sheet_name1, df2, date2, sheet_name2):
 
 # --- Streamlit UI ---
 st.title("💡 Data Converter")
-st.markdown("Upload a single Excel file containing multiple data sheets. You will then select two sheets to consolidate and format into the required side-by-side structure.")
+st.markdown("Upload a single Excel file. The application will process **all** sheets found inside and consolidate the data into one Excel file, with each sheet's data presented in side-by-side columns.")
 
 # File Uploader
 st.subheader("1. Upload Excel File")
@@ -112,75 +144,70 @@ uploaded_excel_file = st.file_uploader(
     key='excel_upload'
 )
 
-sheet_names = []
+processed_sheets_data = {} # Dictionary to hold processed DataFrames and metadata
+
 if uploaded_excel_file:
     # Read the sheet names from the uploaded file
     try:
         xls = pd.ExcelFile(uploaded_excel_file)
         sheet_names = xls.sheet_names
+        st.info(f"Found {len(sheet_names)} sheet(s): {', '.join(sheet_names)}")
     except Exception as e:
         st.error(f"Error reading Excel file sheets: {e}")
         sheet_names = []
+        xls = None
 
-    if sheet_names:
-        st.subheader("2. Select Sheets to Compare")
+    if sheet_names and xls:
+        st.subheader("2. Processing Sheets")
         
-        # Select the two sheets using two columns for clarity
-        col1, col2 = st.columns(2)
+        # Use a list to store sheet data dictionaries {id, name, df, date}
+        processed_sheets = {}
+        successful_sheets = 0
         
-        with col1:
-            sheet_name_1 = st.selectbox(
-                "Select Sheet 1 (Left Column)",
-                options=sheet_names,
-                key='sheet1_select'
-            )
+        # Iterate over all sheets found
+        for i, name in enumerate(sheet_names, 1):
+            with st.spinner(f'Processing sheet "{name}" ({i}/{len(sheet_names)})...'):
+                try:
+                    df_sheet = xls.parse(name)
+                    df_processed, date_str = process_data_sheet(df_sheet, name)
+                    
+                    if df_processed is not None:
+                        # Store the processed DataFrame and metadata using 'i' as a unique ID/suffix
+                        processed_sheets[i] = {'name': name, 'date': date_str, 'df': df_processed}
+                        successful_sheets += 1
+                    
+                except Exception as e:
+                    st.error(f"Skipping sheet '{name}' due to error: {e}")
 
-        with col2:
-            sheet_name_2 = st.selectbox(
-                "Select Sheet 2 (Right Column)",
-                options=[name for name in sheet_names if name != sheet_name_1], # Exclude the first selected sheet
-                key='sheet2_select'
-            )
-
-        if sheet_name_1 and sheet_name_2:
+        
+        if successful_sheets >= 2:
             st.subheader("3. Consolidate and Generate")
+            st.success(f"Successfully processed {successful_sheets} sheets. Ready to consolidate.")
             
             if st.button("Generate Consolidated Excel"):
-                # Load the two selected sheets into DataFrames
                 try:
-                    df_sheet1 = xls.parse(sheet_name_1)
-                    df_sheet2 = xls.parse(sheet_name_2)
-                except Exception as e:
-                    st.error(f"Error parsing selected sheets: {e}")
-                    st.stop()
-                
-                # --- Processing Logic ---
-                with st.spinner(f'Processing sheets "{sheet_name_1}" and "{sheet_name_2}"...'):
-                    # Process both DataFrames
-                    df1, date1 = process_data_sheet(df_sheet1, sheet_name_1)
-                    df2, date2 = process_data_sheet(df_sheet2, sheet_name_2)
+                    with st.spinner('Generating final Excel file with side-by-side format...'):
+                        # Pass the dictionary of all successfully processed sheets
+                        excel_data = create_excel_file_multi(processed_sheets)
                     
-                    if df1 is not None and df2 is not None:
-                        st.success(f"Processing complete: {sheet_name_1} ({date1}) vs {sheet_name_2} ({date2})")
-                        
-                        try:
-                            # Create the final Excel file
-                            excel_data = create_excel_file(df1, date1, sheet_name_1, df2, date2, sheet_name_2)
-                            
-                            st.subheader("4. Download Result")
-                            st.download_button(
-                                label="Download Formatted Excel File",
-                                data=excel_data,
-                                file_name=f'Consolidated_Data_{sheet_name_1}_vs_{sheet_name_2}.xlsx',
-                                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-                            )
-                            st.markdown("Your Excel file is ready!")
-                            
-                        except Exception as e:
-                            st.error(f"An error occurred during Excel file creation: {e}")
+                    st.subheader("4. Download Result")
+                    st.download_button(
+                        label="Download Formatted Excel File",
+                        data=excel_data,
+                        file_name=f'Consolidated_Data_{len(processed_sheets)}_Sheets.xlsx',
+                        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                    )
+                    st.markdown("Your Excel file is ready!")
+                    
+                except Exception as e:
+                    st.error(f"An error occurred during final Excel file creation: {e}")
+        elif successful_sheets == 1:
+            st.warning(f"Only 1 sheet ('{list(processed_sheets.values())[0]['name']}') was successfully processed. You need at least two sheets for the side-by-side comparison format.")
+        else:
+            st.error("No valid sheets were processed. Check if your sheets contain the required columns ('Date & Time' and 'PSum (W)').")
 
     elif uploaded_excel_file:
         st.warning("The uploaded file does not contain any readable sheets or is not a valid Excel file.")
 
 elif not uploaded_excel_file:
-    st.info("Please upload an Excel file to see the sheet selection options.")
+    st.info("Please upload an Excel file to begin the processing.")
