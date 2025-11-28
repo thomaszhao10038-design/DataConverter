@@ -3,7 +3,7 @@ import pandas as pd
 from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, PatternFill, Font, Border, Side, numbers
-from openpyxl.chart import LineChart, Reference
+from openpyxl.chart import LineChart, Reference, Series
 
 # --- Configuration ---
 POWER_COL_OUT = 'PSumW'
@@ -114,8 +114,14 @@ def build_output_excel(sheets_dict):
     thin_border = Border(left=Side(style='thin'), right=Side(style='thin'),
                               top=Side(style='thin'), bottom=Side(style='thin'))
 
+    # Data structure for the "Total" sheet
+    # Format: { date_obj: { sheet_name: max_kw, ... }, ... }
+    total_sheet_data = {}
+    sheet_names_list = []
+
     for sheet_name, df in sheets_dict.items():
         ws = wb.create_sheet(sheet_name)
+        sheet_names_list.append(sheet_name)
         dates = sorted(df["Date"].unique())
         col_start = 1
         max_row_used = 0
@@ -157,21 +163,16 @@ def build_output_excel(sheets_dict):
             ws.cell(row=2, column=col_start+3, value="kW")
 
             # Row 3 (Used for chart series title reference)
-            # Place the short date string in an unmerged cell above the data.
-            # We'll use the cell above the kW column (Row 3, Col col_start+3)
             ws.cell(row=3, column=col_start+3, value=date_str_short)
 
             # Merge UTC column (Starts at row 4)
             ws.merge_cells(start_row=merge_start, start_column=col_start, end_row=merge_end, end_column=col_start)
             ws.cell(row=merge_start, column=col_start, value=date_str_full).alignment = Alignment(horizontal="center", vertical="center")
 
-            # Fill data (starts at row 4, which is index 0 in itertuples() + merge_start)
+            # Fill data (starts at row 4)
             for idx, r in enumerate(day_data_full.itertuples(), start=merge_start):
-                # .itertuples() preserves NaN, which openpyxl writes as blank
                 ws.cell(row=idx, column=col_start+1, value=r.Time)
-                # Power (W) column
                 ws.cell(row=idx, column=col_start+2, value=getattr(r, POWER_COL_OUT)) 
-                # kW column
                 ws.cell(row=idx, column=col_start+3, value=r.kW)
 
             # Summary stats
@@ -196,9 +197,14 @@ def build_output_excel(sheets_dict):
             max_row_used = max(max_row_used, stats_row_start+2)
             daily_max_summary.append((date_str_short, max_kw)) 
 
+            # Collect data for "Total" sheet
+            if date not in total_sheet_data:
+                total_sheet_data[date] = {}
+            total_sheet_data[date][sheet_name] = max_kw
+
             col_start += 4
 
-        # Add Line Chart
+        # Add Line Chart for Individual Sheet
         if dates:
             chart = LineChart()
             chart.title = f"Daily 10-Minute Absolute Power Profile - {sheet_name}"
@@ -206,36 +212,27 @@ def build_output_excel(sheets_dict):
             chart.x_axis.title = "Time"
 
             max_rows = max(day_intervals)
-            # Find the starting column for the first date's time stamps
             first_time_col = 2
-            
-            # Ensure categories_ref uses the maximum required row count (3 + max_rows)
-            # Data starts at Row 4. Max row is 3 + max_rows.
             categories_ref = Reference(ws, min_col=first_time_col, min_row=4, max_row=3 + max_rows)
 
             col_start = 1
             for i, n_rows in enumerate(day_intervals):
-                # Data Reference (kW column, starts at Row 4)
                 data_ref = Reference(ws, min_col=col_start+3, min_row=4, max_col=col_start+3, max_row=3+n_rows)
                 
-                # --- FIX: Use a Reference object for the title, not the string value ---
-                # Define the Reference object for the title cell (Row 3, Col col_start+3)
-                title_ref = Reference(ws, min_col=col_start + 3, min_row=3, max_col=col_start + 3, max_row=3)
-
-                # We add the data series, set titles_from_data=False, and then set the title explicitly.
+                # Get series name as string
+                date_title_str = ws.cell(row=3, column=col_start+3).value
+                
+                # FIX: Set titles_from_data=False and assign the string title to the series
                 chart.add_data(data_ref, titles_from_data=False)
-                # Set the title of the last series added to the title cell reference
-                chart.series[-1].title = title_ref
+                chart.series[-1].title = date_title_str
                 
                 col_start += 4
 
             chart.set_categories(categories_ref)
-            # Place chart starting at column G, 2 rows below the max data row
             ws.add_chart(chart, f'G{max_row_used+2}')
 
-        # Add Daily Max Summary Table
+        # Add Daily Max Summary Table for Individual Sheet
         if daily_max_summary:
-            # Place the summary table 5 rows below the maximum row used by the data and statistics
             start_row = max_row_used + 5 
             
             ws.cell(row=start_row, column=1, value="Daily Max Power (kW) Summary").font = title_font
@@ -253,9 +250,82 @@ def build_output_excel(sheets_dict):
             ws.column_dimensions['A'].width = 15
             ws.column_dimensions['B'].width = 15
 
+    # -----------------------------
+    # CREATE "TOTAL" SHEET
+    # -----------------------------
+    if total_sheet_data:
+        ws_total = wb.create_sheet("Total")
+        
+        # Prepare Headers
+        headers = ["Date"] + sheet_names_list + ["Total Load"]
+        
+        # Write Headers
+        for col_idx, header_text in enumerate(headers, 1):
+            cell = ws_total.cell(row=1, column=col_idx, value=header_text)
+            cell.font = title_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = thin_border
+            # Set rough column width
+            ws_total.column_dimensions[chr(64+col_idx) if col_idx <= 26 else 'A'+chr(64+col_idx-26)].width = 20
+
+        # Write Data
+        sorted_dates = sorted(total_sheet_data.keys())
+        
+        for row_idx, date_obj in enumerate(sorted_dates, 2):
+            # Date Column
+            date_cell = ws_total.cell(row=row_idx, column=1, value=date_obj.strftime('%Y-%m-%d'))
+            date_cell.border = thin_border
+            date_cell.alignment = Alignment(horizontal="center")
+            
+            row_total_load = 0
+            
+            # Sheet Columns
+            for col_idx, sheet_name in enumerate(sheet_names_list, 2):
+                val = total_sheet_data[date_obj].get(sheet_name, 0)
+                # If val is NaN or None, treat as 0
+                if pd.isna(val): val = 0
+                
+                cell = ws_total.cell(row=row_idx, column=col_idx, value=val)
+                cell.number_format = numbers.FORMAT_NUMBER_00
+                cell.border = thin_border
+                row_total_load += val
+            
+            # Total Load Column
+            total_cell = ws_total.cell(row=row_idx, column=len(sheet_names_list) + 2, value=row_total_load)
+            total_cell.number_format = numbers.FORMAT_NUMBER_00
+            total_cell.border = thin_border
+            total_cell.font = Font(bold=True)
+
+        # Add Chart to Total Sheet
+        if sorted_dates:
+            chart_total = LineChart()
+            chart_total.title = "Daily Max Power Summary Across Sheets"
+            chart_total.y_axis.title = "Max Power (kW)"
+            chart_total.x_axis.title = "Date"
+            
+            # Data References: Columns 2 to N+1 (Sheet Columns)
+            # Rows: 1 (Header) to len(sorted_dates) + 1
+            data_min_col = 2
+            data_max_col = len(sheet_names_list) + 1
+            data_max_row = len(sorted_dates) + 1
+            
+            # We add data column by column to create series for each sheet
+            for i, sheet_name in enumerate(sheet_names_list):
+                col = 2 + i
+                data_ref = Reference(ws_total, min_col=col, min_row=1, max_col=col, max_row=data_max_row)
+                chart_total.add_data(data_ref, titles_from_data=True)
+
+            # Category Axis: Date Column (Col 1)
+            cats_ref = Reference(ws_total, min_col=1, min_row=2, max_row=data_max_row)
+            chart_total.set_categories(cats_ref)
+            
+            # Position the chart
+            ws_total.add_chart(chart_total, "B" + str(data_max_row + 3))
+
     stream = BytesIO()
     # Remove the default empty sheet created automatically if it's still there
-    if 'Sheet' in wb.sheetnames and len(wb.sheetnames) > len(sheets_dict):
+    if 'Sheet' in wb.sheetnames and len(wb.sheetnames) > len(sheets_dict) + (1 if total_sheet_data else 0):
         wb.remove(wb['Sheet'])
         
     wb.save(stream)
@@ -273,7 +343,9 @@ def app():
         
         **New Feature:** Leading and trailing zero values (representing missing readings) are now filtered out and appear blank, but zero values *within* the active recording period are kept.
         
-        The output Excel file includes a **line chart** and a **Max Power Summary table** for each day.
+        The output Excel file includes:
+        1. **Individual Sheet Analysis:** A **line chart** and a **Max Power Summary table** for each day.
+        2. **Total Summary Sheet:** A comparative table and graph of daily max power across all sheets.
     """)
 
     uploaded = st.file_uploader("Upload .xlsx file", type=["xlsx"])
