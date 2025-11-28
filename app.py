@@ -95,18 +95,28 @@ def process_power_data(uploaded_file):
 # --- Streamlit UI ---
 
 st.title("DataConverter: 10-Minute Interval Generator")
+
+# 1. File Uploader MUST come before referencing uploaded_file
+uploaded_file = st.file_uploader(
+    "Upload your power data file (.csv or .xlsx)",
+    type=['csv', 'xlsx']
+)
+
+# 2. Conditionally set the file name or a generic placeholder
+file_name_display = "your raw power data file"
+if uploaded_file is not None:
+    # Now that uploaded_file is defined, we can safely access its attributes
+    file_name_display = f"**{uploaded_file.name}**"
+
+
 st.markdown(f"""
-This application converts your raw power data (like your `{uploaded_file.originalName}` example) into a standard 10-minute interval Excel file.
+This application converts {file_name_display} into a standard 10-minute interval Excel file.
 
 **Output Requirements Implemented:**
 1.  **Continuous:** Generates a complete 24-hour, 10-minute timestamp for every day in the dataset, even if no data was recorded.
 2.  **kW Calculation:** The `kW` column is calculated as the **modulus** (absolute value) of `PSum (W)` and converted to **kilowatts** ($W \rightarrow kW$).
 """)
 
-uploaded_file = st.file_uploader(
-    "Upload your power data file (.csv or .xlsx)",
-    type=['csv', 'xlsx']
-)
 
 if uploaded_file is not None:
     
