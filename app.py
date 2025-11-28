@@ -4,6 +4,8 @@ from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, PatternFill, Font, Border, Side, numbers
 from openpyxl.chart import LineChart, Reference
+# FIX: Import get_column_letter to safely handle column names beyond 'Z'
+from openpyxl.utils import get_column_letter 
 
 # --- Configuration ---
 POWER_COL_OUT = 'PSumW'
@@ -218,7 +220,8 @@ def build_output_excel(sheets_dict):
             
             # Format columns width for all columns in the sheet
             for col_idx in range(1, col_start):
-                ws.column_dimensions[chr(64 + col_idx)].width = 15
+                # FIX: Use get_column_letter to handle columns beyond Z
+                ws.column_dimensions[get_column_letter(col_idx)].width = 15
 
 
     # -----------------------------
@@ -277,7 +280,8 @@ def build_output_excel(sheets_dict):
 
     # 3. Format columns width
     for col in range(1, 3 + len(sheet_names)):
-        ws_total.column_dimensions[chr(64 + col)].width = 15
+        # FIX: Use get_column_letter to handle columns beyond Z
+        ws_total.column_dimensions[get_column_letter(col)].width = 15
 
     # 4. Add Line Chart to Total Sheet
     if all_dates:
