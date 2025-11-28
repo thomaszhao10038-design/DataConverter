@@ -225,12 +225,14 @@ def build_output_excel(sheets_dict):
                 # Create a Reference for the series title (the merged date header in Row 1)
                 title_ref = Reference(ws, min_col=col_start, min_row=1)
                 
-                # FIX: Explicitly set the index (idx) and pass the data to 'values'.
-                # This ensures all required internal properties are set for compatibility.
+                # FIX: Instantiate Series with no arguments and assign properties later.
+                # This bypasses strict constructor type-checking that was causing the TypeError.
                 series_idx = len(chart_data_refs)
                 
-                series = Series(values=data_ref, idx=series_idx)
-                series.title = title_ref
+                series = Series()
+                series.idx = series_idx      # Explicitly set the index (should be an integer)
+                series.values = data_ref     # Assign data reference
+                series.title = title_ref     # Assign title reference
                 
                 chart_data_refs.append(series)
 
