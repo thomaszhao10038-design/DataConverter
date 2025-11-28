@@ -132,4 +132,4 @@ if uploaded:
         df = df[[ts_col, "PSum (W)"]].dropna()
 
         # Round timestamp → 10 min bucket
-        df["Rounded"] = df[ts_col].appl_]()
+df["Rounded"] = df[ts_col].apply(round_to_10min)
