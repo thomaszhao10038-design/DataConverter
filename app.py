@@ -31,24 +31,29 @@ def process_sheet(df, timestamp_col, psum_col):
     df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce")
     df = df.dropna(subset=[timestamp_col, psum_col])
 
+    # Round to nearest 10-min
     df["Rounded"] = df[timestamp_col].apply(round_to_10min)
 
     # Extract date and time
     df["Date"] = df["Rounded"].dt.date
     df["Time"] = df["Rounded"].dt.strftime("%H:%M:%S")
 
-    # Create all possible 10-min intervals for each date
-    all_days = df["Date"].unique()
+    # Create full 10-min intervals for each day
+    all_days = sorted(df["Date"].unique())
     all_intervals = pd.date_range("00:00", "23:50", freq="10min").time
-    rows = []
-    for d in all_days:
-        day_data = df[df["Date"] == d].set_index("Time")
-        for t in all_intervals:
-            t_str = t.strftime("%H:%M:%S")
-            val = day_data[psum_col].get(t_str, 0) if t_str in day_data.index else 0
-            rows.append({"Date": d, "Time": t_str, "PSum (W)": val})
 
-    grouped = pd.DataFrame(rows)
+    full_rows = []
+    for d in all_days:
+        # Full 24-hour intervals
+        day_full = pd.DataFrame({"Time": [t.strftime("%H:%M:%S") for t in all_intervals]})
+        day_data = df[df["Date"] == d][["Time", psum_col]].groupby("Time").sum().reset_index()
+        merged = day_full.merge(day_data, on="Time", how="left")
+        merged[psum_col] = merged[psum_col].fillna(0)
+        merged["Date"] = d
+        full_rows.append(merged)
+
+    grouped = pd.concat(full_rows, ignore_index=True)
+    grouped.rename(columns={psum_col: "PSum (W)"}, inplace=True)
     return grouped
 
 # -----------------------------
