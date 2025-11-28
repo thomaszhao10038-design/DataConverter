@@ -70,7 +70,9 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     # 3. Restructure Data into Wide Format (Day by Day)
     
     final_df = pd.DataFrame()
-    all_dates = df['Date'].unique()
+    # FIX APPLIED: Use dropna() to ensure only valid date objects are included in all_dates, 
+    # preventing the 'NaTType does not support strftime' error.
+    all_dates = df['Date'].dropna().unique()
     
     # Track column index for naming (A, E, I, ...)
     current_col_index = 0
