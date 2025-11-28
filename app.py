@@ -31,10 +31,15 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     """
     st.info(f"Processing sheet: **{sheet_name}**...")
     
+    # CRITICAL FIX: Clean column names by stripping whitespace to ensure reliable matching
+    # This addresses issues where headers in Excel have leading/trailing spaces.
+    df.columns = df.columns.astype(str).str.strip()
+
     # 1. Input Validation and Preparation
     required_cols = [TIMESTAMP_COL, POWER_COL_IN]
     if not all(col in df.columns for col in required_cols):
-        st.error(f"Sheet **{sheet_name}** is missing required columns. Expected: '{TIMESTAMP_COL}' and '{POWER_COL_IN}'.")
+        found_cols = df.columns.tolist()
+        st.error(f"Sheet **{sheet_name}** is missing required columns. Expected: '{TIMESTAMP_COL}' and '{POWER_COL_IN}'. Found: {found_cols}")
         return pd.DataFrame()
 
     try:
@@ -179,6 +184,7 @@ def app():
             try:
                 for sheet_name in sheet_names:
                     try:
+                        # Parsing the sheet, relying on default header=0 (Excel row 1)
                         df_in = xls.parse(sheet_name)
                     except Exception as e:
                         st.error(f"Could not read sheet '{sheet_name}'. Error: {e}")
