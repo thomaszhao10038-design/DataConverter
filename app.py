@@ -125,6 +125,7 @@ def build_output_excel(sheets_dict):
             
             # --- 1. Merge date header ---
             ws.merge_cells(start_row=1, start_column=col_start, end_row=1, end_column=col_start + COL_BLOCK_WIDTH - 1)
+            # This cell holds the title text we want to use for the chart legend
             ws.cell(row=1, column=col_start, value=date_str_full).alignment = Alignment(horizontal="center", vertical="center")
 
             # --- 2. Sub-headers (Row 2) ---
@@ -197,9 +198,9 @@ def build_output_excel(sheets_dict):
                 data_col = col_start + COL_KW_REL - 1
                 data_ref = Reference(ws, min_col=data_col, min_row=merge_start_row, max_row=merge_end_row, max_col=data_col)
                 
-                # FIX: Use Series constructor with values and title (string) to prevent TypeError
-                # Title is set to the full date string for the legend
-                series = Series(values=data_ref, title=date_str_full)
+                # FIX FOR TYPE ERROR: Reference the cell containing the date string for the chart title/legend
+                title_ref = Reference(ws, min_col=col_start, min_row=1, max_col=col_start, max_row=1)
+                series = Series(values=data_ref, title=title_ref) 
                 
                 chart_series_list.append(series)
 
@@ -210,19 +211,22 @@ def build_output_excel(sheets_dict):
             chart = LineChart()
             chart.style = 10
             
-            # 1. Chart Title
+            # 1. Chart Title: (sheet name) - power consumption
             chart.title = f"{sheet_name} - power consumption"
             
-            # 2 & 3. Axis Label Swap (based on user request)
+            # 2. Axis Label Swap (Time on Y, Power on X)
+            # openpyxl treats the categories (time) as the X-axis by default, 
+            # and the values (kW) as the Y-axis by default.
+            # We are *swapping the labels* as requested:
             chart.y_axis.title = "Time" 
-            chart.x_axis.title = "Power (kW)"
-            
-            # 4. Set categories and series
+            chart.x_axis.title = "Power (kW)" # This label is shown where the categories (Time) usually are
+
+            # 3. Set categories and series
             chart.set_categories(chart_categories_ref)
             for series in chart_series_list:
                 chart.series.append(series)
             
-            # 5. Y-Axis/Time interval: Skip every 1 label to display every 2nd label (20 min interval from 10 min data)
+            # 4. Y-Axis/Time interval: Skip every 1 label to display every 2nd label (20 min interval from 10 min data)
             chart.x_axis.tickLblSkip = 1 
 
             chart_anchor = f'G{max_row_used + 2}'
