@@ -22,9 +22,7 @@ POWER_COL_OUT = 'PSumW'
 def round_to_10min(ts):
     """
     Rounds a timestamp down to the nearest 10-minute interval (e.g., 12:12:01 -> 12:10:00).
-    This function is now part of the Pandas resampling process, but is kept for clarity 
-    in the manual data processing step (though Pandas handles this automatically better).
-    For our corrected aggregation, we will use a more standard method within Pandas.
+    This function is primarily kept for context, as Pandas resampling now handles the aggregation.
     """
     if pd.isna(ts) or ts is None:
         return pd.NaT
@@ -40,20 +38,20 @@ def round_to_10min(ts):
     return start_of_day + pd.Timedelta(minutes=rounded_minutes)
 
 # -----------------------------
-# PROCESS SINGLE SHEET (CORRECTED AGGREGATION)
+# PROCESS SINGLE SHEET (IMPROVED PADDING & AGGREGATION)
 # -----------------------------
 def process_sheet(df, timestamp_col, psum_col):
     """
     Processes a single sheet by rounding timestamps to 10-minute intervals, 
-    summing absolute power values in each interval, and ensuring all 144 
-    intervals for every day are present.
+    summing absolute power values in each interval, and ensuring all 10-minute 
+    intervals for the entire time range are present using Pandas reindexing.
     """
-    # 1. Cleaning and Preparation (Improved from previous versions)
+    # 1. Cleaning and Preparation
     
     # Ensure columns are stripped of leading/trailing spaces for reliable access
     df.columns = df.columns.astype(str).str.strip()
 
-    # Convert timestamp and drop invalid rows
+    # Convert timestamp. dayfirst=True handles DD/MM/YYYY format.
     df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce", dayfirst=True)
     
     # Aggressively clean and ensure Power column is numeric
@@ -64,6 +62,7 @@ def process_sheet(df, timestamp_col, psum_col):
     df = df.dropna(subset=[timestamp_col, psum_col])
     
     if df.empty:
+        # If no valid data is found, return an empty DataFrame
         return pd.DataFrame()
 
     # 2. Resample and Aggregate Data
@@ -74,58 +73,56 @@ def process_sheet(df, timestamp_col, psum_col):
     # Set the timestamp as index
     df_indexed = df.set_index(timestamp_col)
     
-    # CRITICAL FIX: Resample the data to a 10-minute frequency, taking the SUM.
-    # 'label=left' means the time 12:10:00 covers the period from 12:10:00 up to 12:19:59.
-    # 'origin=start' ensures the interval begins exactly at the start of the day (00:00:00).
+    # Resample the data to a 10-minute frequency, taking the SUM of all readings in that window.
+    # 'label=left' is standard for power aggregation windows.
     resampled_data = df_indexed[psum_col].resample(
         '10min', 
         label='left', 
         origin='start'
     ).sum()
     
-    # Convert back to DataFrame
+    # Convert the aggregated Series back to a DataFrame
     df_out = resampled_data.reset_index()
-    # Rename the PSum column to a simple, guaranteed name for reliable access later
+    # Rename the PSum column to a simple, guaranteed name
     df_out.columns = ['Rounded', POWER_COL_OUT] 
     
-    # 3. Padding and Final Formatting
-    
-    df_out["Date"] = df_out["Rounded"].dt.date
-    df_out["Time"] = df_out["Rounded"].dt.strftime("%H:%M") # Use HH:MM format
+    # Store the set of original valid dates to filter the final padded range
+    original_dates = set(df_out['Rounded'].dt.date)
 
-    # Create a standardized time index for padding: 00:00 to 23:50
-    all_intervals_str = [pd.to_datetime(f'{i:02d}:{j:02d}', format='%H:%M').strftime('%H:%M') 
-                         for i in range(24) for j in range(0, 60, 10)]
+    # 3. Robust Padding (Ensuring all 10-min slots for all days are present)
     
-    # Group the aggregated data by day
-    final_rows = []
+    min_date = df_out['Rounded'].min().normalize()
+    max_date = df_out['Rounded'].max().normalize()
     
-    for date in df_out["Date"].unique():
-        # Select only the power column by its standardized name
-        day_data = df_out[df_out["Date"] == date].set_index("Time")[[POWER_COL_OUT]] 
-        
-        # Create a day-specific template DataFrame (144 rows)
-        template_df = pd.DataFrame(index=all_intervals_str)
-        template_df.index.name = "Time"
-        
-        # Join the actual data onto the template to ensure all 144 intervals are present
-        padded_day_data = template_df.join(day_data, how='left')
-        
-        # Fill NaN (periods with no power readings) with 0, as required
-        padded_day_data[POWER_COL_OUT] = padded_day_data[POWER_COL_OUT].fillna(0)
+    # Create a continuous 10-minute index covering the entire data range
+    full_time_index = pd.date_range(
+        start=min_date, 
+        # End at the start of the last 10-minute interval on the max_date
+        end=max_date + pd.Timedelta(hours=23, minutes=50), 
+        freq='10min'
+    )
 
-        # Prepare final output structure
-        padded_day_data['Date'] = date
-        padded_day_data = padded_day_data.reset_index().rename(columns={'index': 'Time'})
-        
-        # Append to the final list
-        final_rows.append(padded_day_data)
+    # Re-index the resampled data onto the full time index, filling missing intervals with 0
+    df_indexed_for_reindex = df_out.set_index('Rounded')
+    df_padded_series = df_indexed_for_reindex[POWER_COL_OUT].reindex(full_time_index, fill_value=0)
+    
+    # Convert back to DataFrame and clean up
+    grouped = df_padded_series.reset_index().rename(columns={'index': 'Rounded'})
+    grouped.columns = ['Rounded', POWER_COL_OUT]
 
-    if not final_rows:
-        return pd.DataFrame()
-        
-    # Concatenate all days back together
-    grouped = pd.concat(final_rows, ignore_index=True)
+    # 4. Final Formatting
+    
+    # Extract date and time columns from the final padded (and now complete) time series
+    grouped["Date"] = grouped["Rounded"].dt.date
+    grouped["Time"] = grouped["Rounded"].dt.strftime("%H:%M")
+
+    # Filter the result to only include dates that were present in the original data.
+    # This prevents adding empty days after the last data point if the index went too far.
+    grouped = grouped[grouped["Date"].isin(original_dates)]
+    
+    # Final check: ensure the data has all days.
+    st.info(f"Total days processed and included: {len(grouped['Date'].unique())}")
+    
     return grouped
 
 # -----------------------------
@@ -169,7 +166,7 @@ def build_output_excel(sheets_dict):
                 ws.cell(row=idx, column=col_start+1, value=r.Time) 
                 
                 # Column 3: Active Power (W) - The aggregated sum
-                # FIX: Access the column by its guaranteed name (PSumW) instead of fragile positional index (_3)
+                # Access the column by its guaranteed name (PSumW)
                 power_w = getattr(r, POWER_COL_OUT)
                 ws.cell(row=idx, column=col_start+2, value=power_w)
                 
