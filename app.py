@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 from openpyxl import Workbook
-from openpyxl.styles import Alignment 
+# Import PatternFill, Font, and numbers for enhanced styling and number formatting
+from openpyxl.styles import Alignment, PatternFill, Font, Border, Side, numbers 
 
 # --- Configuration ---
 POWER_COL_OUT = 'PSumW'
@@ -96,6 +97,19 @@ def build_output_excel(sheets_dict):
     if 'Sheet' in wb.sheetnames:
          wb.remove(wb['Sheet'])
 
+    # Define styles for the final summary table
+    header_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid') # Light Blue
+    title_font = Font(bold=True, size=12)
+    header_font = Font(bold=True)
+    # Define a thin black border
+    thin_border = Border(left=Side(style='thin'), 
+                         right=Side(style='thin'), 
+                         top=Side(style='thin'), 
+                         bottom=Side(style='thin'))
+    # Alternating row color (AliceBlue)
+    data_fill_alt = PatternFill(start_color='F0F8FF', end_color='F0F8FF', fill_type='solid')
+
+
     for sheet_name, df in sheets_dict.items():
         ws = wb.create_sheet(sheet_name)
         dates = sorted(df["Date"].unique())
@@ -105,7 +119,11 @@ def build_output_excel(sheets_dict):
         max_row_used = 0 # Track the lowest row written to across all columns
 
         for date in dates:
-            date_str = date.strftime('%Y-%m-%d')
+            # 1. Update date format to DD-Mon (e.g., 12-Nov) for the summary table
+            date_str_short = date.strftime('%d-%b') 
+            
+            # Use original date string for main table header
+            date_str_full = date.strftime('%Y-%m-%d')
             
             day_data = df[df["Date"] == date].sort_values("Time")
             data_rows_count = len(day_data)
@@ -114,12 +132,10 @@ def build_output_excel(sheets_dict):
             
             # 1. Merge date header (Row 1, columns 1 to 4)
             ws.merge_cells(start_row=1, start_column=col_start, end_row=1, end_column=col_start+3)
-            ws.cell(row=1, column=col_start, value=date_str)
+            ws.cell(row=1, column=col_start, value=date_str_full) # Use full date for column headers
             ws.cell(row=1, column=col_start).alignment = Alignment(horizontal="center", vertical="center")
 
             # 2. Sub-headers (Row 2)
-            # NOTE: The header remains "UTC Offset (minutes)" as requested by the output format,
-            # but the content below it will show the date string.
             ws.cell(row=2, column=col_start, value="UTC Offset (minutes)")
             ws.cell(row=2, column=col_start+1, value="Local Time Stamp")
             ws.cell(row=2, column=col_start+2, value="Active Power (W)")
@@ -134,7 +150,7 @@ def build_output_excel(sheets_dict):
                                end_column=col_start)
                 
                 # Set the UTC Offset value to the DATE STRING and center alignment
-                utc_cell = ws.cell(row=merge_start_row, column=col_start, value=date_str)
+                utc_cell = ws.cell(row=merge_start_row, column=col_start, value=date_str_full)
                 utc_cell.alignment = Alignment(horizontal="center", vertical="center")
 
 
@@ -186,8 +202,8 @@ def build_output_excel(sheets_dict):
                 # Update max row used for final summary placement
                 max_row_used = max(max_row_used, stats_row_start + 2)
                 
-                # Collect data for final summary table
-                daily_max_summary.append((date_str, max_kw_abs))
+                # Collect data for final summary table using short date format
+                daily_max_summary.append((date_str_short, max_kw_abs))
 
 
             col_start += 4
@@ -197,22 +213,53 @@ def build_output_excel(sheets_dict):
             # Start the summary table 2 rows below the end of the last day block
             final_summary_row = max_row_used + 2 
             
-            # Summary Table Title (Merged over 2 columns)
-            ws.cell(row=final_summary_row, column=1, value="Daily Max Power (kW) Summary")
+            # --- Summary Table Title (Merged over 2 columns) ---
+            title_cell = ws.cell(row=final_summary_row, column=1, value="Daily Max Power (kW) Summary")
             ws.merge_cells(start_row=final_summary_row, start_column=1, end_row=final_summary_row, end_column=2)
-            ws.cell(row=final_summary_row, column=1).alignment = Alignment(horizontal="center", vertical="center")
+            title_cell.alignment = Alignment(horizontal="center", vertical="center")
+            title_cell.font = title_font
 
-            # Summary Table Headers
+            # --- Summary Table Headers ---
             final_summary_row += 1
-            ws.cell(row=final_summary_row, column=1, value="Day")
-            ws.cell(row=final_summary_row, column=2, value="Max (kW)")
+            header_row = final_summary_row
+            
+            # Header Column 1: Day
+            day_header_cell = ws.cell(row=header_row, column=1, value="Day")
+            day_header_cell.fill = header_fill
+            day_header_cell.font = header_font
+            day_header_cell.border = thin_border
+            day_header_cell.alignment = Alignment(horizontal="center")
+            
+            # Header Column 2: Max (kW)
+            max_header_cell = ws.cell(row=header_row, column=2, value="Max (kW)")
+            max_header_cell.fill = header_fill
+            max_header_cell.font = header_font
+            max_header_cell.border = thin_border
+            max_header_cell.alignment = Alignment(horizontal="center")
 
-            # Write data
+
+            # --- Write data (applying 2dp formatting and color) ---
             for date_str, max_kw in daily_max_summary:
                 final_summary_row += 1
-                ws.cell(row=final_summary_row, column=1, value=date_str)
-                # Apply 2 decimal rounding to the Max kW value
-                ws.cell(row=final_summary_row, column=2, value=round(max_kw, 2))
+                
+                # Apply alternating row color
+                if (final_summary_row % 2) == 0:
+                    fill_style = data_fill_alt
+                else:
+                    fill_style = PatternFill(fill_type=None) # No fill for odd rows
+                
+                # Column 1: Day (DD-Mon format)
+                day_cell = ws.cell(row=final_summary_row, column=1, value=date_str)
+                day_cell.border = thin_border
+                day_cell.fill = fill_style
+                day_cell.alignment = Alignment(horizontal="center")
+                
+                # Column 2: Max (kW) - Value rounded to 2dp and explicitly formatted
+                max_cell = ws.cell(row=final_summary_row, column=2, value=max_kw)
+                max_cell.number_format = numbers.FORMAT_NUMBER_00 # Ensures 2 decimal places (e.g., 0.00)
+                max_cell.border = thin_border
+                max_cell.fill = fill_style
+                max_cell.alignment = Alignment(horizontal="right")
                 
 
     stream = BytesIO()
