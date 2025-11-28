@@ -101,6 +101,9 @@ def build_output_excel(sheets_dict):
         dates = sorted(df["Date"].unique())
 
         col_start = 1
+        daily_max_summary = [] # List to store max kW for the final summary table
+        max_row_used = 0 # Track the lowest row written to across all columns
+
         for date in dates:
             date_str = date.strftime('%Y-%m-%d')
             
@@ -179,9 +182,38 @@ def build_output_excel(sheets_dict):
                 ws.cell(row=stats_row_start + 2, column=col_start + 1, value="Max")
                 ws.cell(row=stats_row_start + 2, column=col_start + 2, value=max_w)
                 ws.cell(row=stats_row_start + 2, column=col_start + 3, value=max_kw_abs)
+                
+                # Update max row used for final summary placement
+                max_row_used = max(max_row_used, stats_row_start + 2)
+                
+                # Collect data for final summary table
+                daily_max_summary.append((date_str, max_kw_abs))
 
 
             col_start += 4
+            
+        # 6. Add final summary table for Max kW across all days
+        if daily_max_summary:
+            # Start the summary table 2 rows below the end of the last day block
+            final_summary_row = max_row_used + 2 
+            
+            # Summary Table Title (Merged over 2 columns)
+            ws.cell(row=final_summary_row, column=1, value="Daily Max Power (kW) Summary")
+            ws.merge_cells(start_row=final_summary_row, start_column=1, end_row=final_summary_row, end_column=2)
+            ws.cell(row=final_summary_row, column=1).alignment = Alignment(horizontal="center", vertical="center")
+
+            # Summary Table Headers
+            final_summary_row += 1
+            ws.cell(row=final_summary_row, column=1, value="Day")
+            ws.cell(row=final_summary_row, column=2, value="Max (kW)")
+
+            # Write data
+            for date_str, max_kw in daily_max_summary:
+                final_summary_row += 1
+                ws.cell(row=final_summary_row, column=1, value=date_str)
+                # Apply 2 decimal rounding to the Max kW value
+                ws.cell(row=final_summary_row, column=2, value=round(max_kw, 2))
+                
 
     stream = BytesIO()
     wb.save(stream)
