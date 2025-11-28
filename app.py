@@ -301,7 +301,8 @@ def build_output_excel(sheets_dict):
         # Add Chart to Total Sheet
         if sorted_dates:
             chart_total = LineChart()
-            chart_total.title = "Daily Max Power Summary Across Sheets"
+            # Set the title to "Overview" as requested
+            chart_total.title = "Overview" 
             chart_total.y_axis.title = "Max Power (kW)"
             chart_total.x_axis.title = "Date"
             
@@ -313,10 +314,13 @@ def build_output_excel(sheets_dict):
             total_cols = len(sheet_names_list) + 2
             
             # Chart Data Reference: Cover all value columns (Sheet 1...Sheet N + Total Load)
-            # Starts from Column 2 (since Col 1 is Date) to total_cols
             data_ref = Reference(ws_total, min_col=2, min_row=1, max_col=total_cols, max_row=data_max_row)
             chart_total.add_data(data_ref, titles_from_data=True)
 
+            # Iterate through all generated series and set smooth=False for straight lines
+            for s in chart_total.series:
+                s.smooth = False
+            
             # Category Axis: Date Column (Col 1)
             cats_ref = Reference(ws_total, min_col=1, min_row=2, max_row=data_max_row)
             chart_total.set_categories(cats_ref)
