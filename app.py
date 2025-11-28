@@ -51,18 +51,22 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     # Drop rows where timestamp conversion failed (resulted in NaT)
     df = df.dropna(subset=[TIMESTAMP_COL]).sort_values(by=TIMESTAMP_COL).reset_index(drop=True)
     
-    # FIX: Explicitly clean and ensure Power column is numeric before aggregation
-    # The 'decimal' keyword is causing an error due to Pandas version incompatibility.
-    # We must manually replace commas (,) with periods (.) for decimal separation.
+    # CRITICAL FIX: Aggressively clean and ensure Power column is numeric before aggregation.
     
-    # 1. Convert to string, strip whitespace, and replace commas
+    # 1. Convert to string, strip whitespace.
     power_series = df[POWER_COL_IN].astype(str).str.strip()
+    
+    # 2. Replace commas with periods to handle international decimal format.
     power_series = power_series.str.replace(',', '.', regex=False)
     
-    # 2. Coerce non-numeric values to NaN (now using '.' as decimal)
+    # 3. AGGRESSIVE CLEANING: Remove everything that is NOT a digit, a period, or a minus sign.
+    # This removes hidden units, currency symbols, and other non-numeric garbage.
+    power_series = power_series.str.replace(r'[^0-9\.\-]', '', regex=True)
+
+    # 4. Coerce non-numeric values to NaN.
     df[POWER_COL_IN] = pd.to_numeric(power_series, errors='coerce')
     
-    # 3. Drop rows where power value is invalid
+    # 5. Drop rows where power value is invalid (NaN)
     df = df.dropna(subset=[POWER_COL_IN])
     
     # Set the valid timestamp column as the index for resampling
@@ -225,7 +229,7 @@ def app():
                             worksheet.merge_range(
                                 1,                    # Start row (1st data row, after header 0)
                                 col_index,            # Start column (0, 4, 8, ...)
-                                num_rows,             # End row (last data row index)
+                                num_rows,             # End row (last data data row index)
                                 col_index,            # End column (same as start)
                                 date_value,           # The value to display in the merged cell
                                 merge_format          # Formatting
