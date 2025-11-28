@@ -178,6 +178,7 @@ def build_output_excel(sheets_dict):
                 ws.cell(row=idx, column=col_start+1, value=r.Time) # Local Time Stamp (Time)
                 
                 # Use .get() with None default to handle pd.NA values gracefully, openpyxl leaves the cell empty
+                # We ensure the value written is None or a numeric type
                 ws.cell(row=idx, column=col_start+2, value=getattr(r, POWER_COL_OUT) if pd.notna(getattr(r, POWER_COL_OUT)) else None) # Active Power (W)
                 
                 kw_val = r.kW if pd.notna(r.kW) else None
@@ -188,16 +189,16 @@ def build_output_excel(sheets_dict):
             valid_kw = day_data['kW'].dropna()
             valid_w = day_data[POWER_COL_OUT].dropna()
             
-            # Check if series are empty before calculating stats to avoid passing NaN for mean
+            # Check if series are empty before calculating stats. Explicitly cast results to float.
             series_not_empty_w = not valid_w.empty
-            sum_w = valid_w.sum() if series_not_empty_w else 0.0
-            mean_w = valid_w.mean() if series_not_empty_w else 0.0
-            max_w = valid_w.max() if series_not_empty_w else 0.0
+            sum_w = float(valid_w.sum()) if series_not_empty_w else 0.0
+            mean_w = float(valid_w.mean()) if series_not_empty_w else 0.0
+            max_w = float(valid_w.max()) if series_not_empty_w else 0.0
             
             series_not_empty_kw = not valid_kw.empty
-            sum_kw = valid_kw.sum() if series_not_empty_kw else 0.0
-            mean_kw = valid_kw.mean() if series_not_empty_kw else 0.0
-            max_kw = valid_kw.max() if series_not_empty_kw else 0.0
+            sum_kw = float(valid_kw.sum()) if series_not_empty_kw else 0.0
+            mean_kw = float(valid_kw.mean()) if series_not_empty_kw else 0.0
+            max_kw = float(valid_kw.max()) if series_not_empty_kw else 0.0
             
             ws.cell(row=stats_row_start, column=col_start+1, value="Total")
             ws.cell(row=stats_row_start, column=col_start+2, value=sum_w)
@@ -210,7 +211,9 @@ def build_output_excel(sheets_dict):
             ws.cell(row=stats_row_start+2, column=col_start+3, value=max_kw).number_format = numbers.FORMAT_NUMBER_00
             
             max_row_used = max(max_row_used, stats_row_start+2)
-            daily_max_summary.append((date_str_short, max_kw))
+            
+            # Ensure max_kw is standard float before appending to list
+            daily_max_summary.append((date_str_short, float(max_kw)))
             
             # --- Chart Series References ---
             
@@ -276,6 +279,7 @@ def build_output_excel(sheets_dict):
             for d, (date_str, max_kw) in enumerate(daily_max_summary):
                 row = start_row + 1 + d
                 ws.cell(row=row, column=1, value=date_str)
+                # max_kw is already a standard Python float due to explicit casting above
                 ws.cell(row=row, column=2, value=max_kw).number_format = numbers.FORMAT_NUMBER_00
                 
             # Set column widths for summary table
