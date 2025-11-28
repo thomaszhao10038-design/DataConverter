@@ -225,9 +225,12 @@ def build_output_excel(sheets_dict):
                 # NEW: Create a Reference for the series title (the merged date header in Row 1)
                 title_ref = Reference(ws, min_col=col_start, min_row=1)
                 
-                # FIX: Create the Series object without the title argument first to avoid constructor error,
-                # then explicitly assign the title reference.
-                series = Series(data_ref)
+                # --- NEW FIX: Explicitly set the index (idx) for the series ---
+                # This prevents a TypeError in some openpyxl environments where 'idx' is not
+                # auto-calculated correctly.
+                series_idx = len(chart_data_refs)
+                
+                series = Series(values=data_ref, idx=series_idx) # Pass data reference to 'values' and set 'idx'
                 series.title = title_ref
                 
                 chart_data_refs.append(series)
