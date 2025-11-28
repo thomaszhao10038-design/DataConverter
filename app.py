@@ -13,6 +13,8 @@ OUTPUT_HEADERS = [
     'Active Power (W)', 
     'kW'
 ]
+# Define a robust internal column name for PSum (W) aggregation
+POWER_COL_OUT = 'PSumW'
 
 # -----------------------------
 # ROUND TIMESTAMP TO 10 MIN
@@ -83,7 +85,8 @@ def process_sheet(df, timestamp_col, psum_col):
     
     # Convert back to DataFrame
     df_out = resampled_data.reset_index()
-    df_out.columns = ['Rounded', psum_col]
+    # Rename the PSum column to a simple, guaranteed name for reliable access later
+    df_out.columns = ['Rounded', POWER_COL_OUT] 
     
     # 3. Padding and Final Formatting
     
@@ -98,7 +101,8 @@ def process_sheet(df, timestamp_col, psum_col):
     final_rows = []
     
     for date in df_out["Date"].unique():
-        day_data = df_out[df_out["Date"] == date].set_index("Time")[[psum_col]]
+        # Select only the power column by its standardized name
+        day_data = df_out[df_out["Date"] == date].set_index("Time")[[POWER_COL_OUT]] 
         
         # Create a day-specific template DataFrame (144 rows)
         template_df = pd.DataFrame(index=all_intervals_str)
@@ -108,7 +112,7 @@ def process_sheet(df, timestamp_col, psum_col):
         padded_day_data = template_df.join(day_data, how='left')
         
         # Fill NaN (periods with no power readings) with 0, as required
-        padded_day_data[psum_col] = padded_day_data[psum_col].fillna(0)
+        padded_day_data[POWER_COL_OUT] = padded_day_data[POWER_COL_OUT].fillna(0)
 
         # Prepare final output structure
         padded_day_data['Date'] = date
@@ -165,7 +169,8 @@ def build_output_excel(sheets_dict):
                 ws.cell(row=idx, column=col_start+1, value=r.Time) 
                 
                 # Column 3: Active Power (W) - The aggregated sum
-                power_w = r._3 # Access PSum (W) using its internal tuple index
+                # FIX: Access the column by its guaranteed name (PSumW) instead of fragile positional index (_3)
+                power_w = getattr(r, POWER_COL_OUT)
                 ws.cell(row=idx, column=col_start+2, value=power_w)
                 
                 # Column 4: kW (W / 1000)
