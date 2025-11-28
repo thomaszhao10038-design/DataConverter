@@ -3,7 +3,7 @@ import pandas as pd
 from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, PatternFill, Font, Border, Side, numbers
-from openpyxl.chart import LineChart, Reference, Series
+from openpyxl.chart import LineChart, Reference
 
 # --- Configuration ---
 POWER_COL_OUT = 'PSumW'
@@ -75,7 +75,6 @@ def build_output_excel(sheets_dict):
         wb.remove(wb['Sheet'])
 
     header_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid')
-    total_header_fill = PatternFill(start_color='90EE90', end_color='90EE90', fill_type='solid')
     title_font = Font(bold=True, size=12)
     thin_border = Border(left=Side(style='thin'), right=Side(style='thin'),
                          top=Side(style='thin'), bottom=Side(style='thin'))
@@ -83,8 +82,6 @@ def build_output_excel(sheets_dict):
     # Dictionary to hold daily max power per sheet for Total sheet
     total_data = {}
 
-    # -----------------------------
-    # Process each individual sheet
     for sheet_name, df in sheets_dict.items():
         ws = wb.create_sheet(sheet_name)
         dates = sorted(df["Date"].unique())
@@ -127,28 +124,60 @@ def build_output_excel(sheets_dict):
 
             # Summary stats
             stats_row_start = merge_end + 1
+            sum_w = day_data_active[POWER_COL_OUT].sum()
+            mean_w = day_data_active[POWER_COL_OUT].mean()
+            max_w = day_data_active[POWER_COL_OUT].max()
+            sum_kw = day_data_active['kW'].sum()
+            mean_kw = day_data_active['kW'].mean()
             max_kw = day_data_active['kW'].max()
+
+            ws.cell(row=stats_row_start, column=col_start+1, value="Total")
+            ws.cell(row=stats_row_start, column=col_start+2, value=sum_w)
+            ws.cell(row=stats_row_start, column=col_start+3, value=sum_kw)
+            ws.cell(row=stats_row_start+1, column=col_start+1, value="Average")
+            ws.cell(row=stats_row_start+1, column=col_start+2, value=mean_w)
+            ws.cell(row=stats_row_start+1, column=col_start+3, value=mean_kw)
+            ws.cell(row=stats_row_start+2, column=col_start+1, value="Max")
+            ws.cell(row=stats_row_start+2, column=col_start+2, value=max_w)
             ws.cell(row=stats_row_start+2, column=col_start+3, value=max_kw)
 
-            # Save daily max for Total sheet
-            total_data.setdefault(date_str_full, {})[sheet_name] = max_kw
-
             max_row_used = max(max_row_used, stats_row_start+2)
+            daily_max_summary.append((date_str_short, max_kw))
+
+            # Save max kw for Total sheet
+            for date_val, max_kw_val in daily_max_summary:
+                total_data.setdefault(date_val, {})[sheet_name] = max_kw_val
+
             col_start += 4
+
+        # Line chart (optional, unchanged)
+        if dates:
+            chart = LineChart()
+            chart.title = f"{sheet_name} - Power Consumption"
+            chart.y_axis.title = "Power (kW)"
+            chart.x_axis.title = "Time"
+            max_rows = max(day_intervals)
+            categories_ref = Reference(ws, min_col=2, min_row=3, max_row=2+max_rows)
+            col_start = 1
+            for n_rows in day_intervals:
+                data_ref = Reference(ws, min_col=col_start+3, min_row=3, max_row=2+n_rows)
+                chart.add_data(data_ref, titles_from_data=False)
+                col_start += 4
+            chart.set_categories(categories_ref)
+            ws.add_chart(chart, f'G{max_row_used+2}')
 
     # -----------------------------
     # Add Total Sheet
+    # -----------------------------
     ws_total = wb.create_sheet("Total")
     all_dates = sorted(total_data.keys())
     sheet_names = list(sheets_dict.keys())
 
-    # Header
     ws_total.cell(row=1, column=1, value="Date").font = title_font
     for i, sheet_name in enumerate(sheet_names):
         ws_total.cell(row=1, column=2+i, value=sheet_name).font = title_font
     ws_total.cell(row=1, column=2+len(sheet_names), value="Total Load").font = title_font
 
-    # Data rows
     for r_idx, date_val in enumerate(all_dates, start=2):
         ws_total.cell(row=r_idx, column=1, value=date_val)
         total_load = 0
@@ -158,49 +187,11 @@ def build_output_excel(sheets_dict):
             total_load += value
         ws_total.cell(row=r_idx, column=2+len(sheet_names), value=total_load)
 
-    # Beautify table
-    max_col = 2 + len(sheet_names)
-    for r in range(1, len(all_dates)+2):
-        for c in range(1, max_col+1):
-            cell = ws_total.cell(row=r, column=c)
-            cell.border = thin_border
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            if r == 1:
-                cell.fill = total_header_fill
-            if isinstance(cell.value, float):
-                cell.number_format = numbers.FORMAT_NUMBER_00
+    # Format columns width
+    for col in range(1, 3+len(sheet_names)):
+        ws_total.column_dimensions[chr(64+col)].width = 15
 
-    # Column widths
-    for col in range(1, max_col+1):
-        ws_total.column_dimensions[chr(64+col)].width = 18
-
-    # -----------------------------
-    # Line chart based on Total sheet table
-    chart_total = LineChart()
-    chart_total.title = "Daily Max Power per Sheet and Total Load"
-    chart_total.y_axis.title = "kW"
-    chart_total.x_axis.title = "Date"
-    chart_total.x_axis.number_format = "yyyy-mm-dd"
-    chart_total.height = 12
-    chart_total.width = 30
-
-    # X-axis categories = dates
-    categories = Reference(ws_total, min_col=1, min_row=2, max_row=1+len(all_dates))
-
-    # Series = each sheet + total load
-    for c_idx, sheet_name in enumerate(sheet_names, start=2):
-        data = Reference(ws_total, min_col=c_idx, min_row=2, max_row=1+len(all_dates))
-        series = Series(data, title=sheet_name)
-        chart_total.series.append(series)
-
-    # Total load series
-    data_total = Reference(ws_total, min_col=2+len(sheet_names), min_row=2, max_row=1+len(all_dates))
-    chart_total.series.append(Series(data_total, title="Total Load"))
-
-    chart_total.set_categories(categories)
-    ws_total.add_chart(chart_total, "A10")
-
-    # Save workbook
+    # Save workbook to BytesIO
     stream = BytesIO()
     wb.save(stream)
     stream.seek(0)
@@ -208,31 +199,50 @@ def build_output_excel(sheets_dict):
 
 # -----------------------------
 # STREAMLIT APP
+# -----------------------------
 def app():
     st.set_page_config(layout="wide", page_title="Electricity Data Converter")
     st.title("📊 Excel 10-Minute Electricity Data Converter")
+    st.markdown("""
+        Upload an **Excel file (.xlsx)** with time-series data. Each sheet is processed to calculate total absolute power (W) in 10-minute intervals. 
+        
+        Leading and trailing zero values (representing missing readings) are filtered out and appear blank, but zero values *within* the active recording period are kept.
+        
+        The output Excel file includes a **line chart**, a **Max Power Summary table**, and a **Total sheet** with daily max power for all sheets.
+    """)
+
     uploaded = st.file_uploader("Upload .xlsx file", type=["xlsx"])
     if uploaded:
         xls = pd.ExcelFile(uploaded)
         result_sheets = {}
         st.write("---")
+
         for sheet_name in xls.sheet_names:
+            st.markdown(f"**Processing sheet: `{sheet_name}`**")
             try:
                 df = pd.read_excel(uploaded, sheet_name=sheet_name)
-            except:
+            except Exception as e:
+                st.error(f"Error reading sheet '{sheet_name}': {e}")
                 continue
+
             df.columns = df.columns.astype(str).str.strip()
             timestamp_col = next((c for c in df.columns if c in ["Date & Time","Date&Time","Timestamp","DateTime","Local Time","TIME","ts"]), None)
             psum_col = next((c for c in df.columns if c in ["PSum (W)","Psum (W)","PSum","P (W)","Power"]), None)
-            if timestamp_col and psum_col:
-                processed = process_sheet(df, timestamp_col, psum_col)
-                if not processed.empty:
-                    result_sheets[sheet_name] = processed
+            if not timestamp_col or not psum_col:
+                st.error(f"Sheet '{sheet_name}' missing required columns.")
+                continue
+
+            processed = process_sheet(df, timestamp_col, psum_col)
+            if not processed.empty:
+                result_sheets[sheet_name] = processed
+                st.success(f"Sheet '{sheet_name}' processed successfully with {len(processed['Date'].unique())} day(s) of data.")
+            else:
+                st.warning(f"Sheet '{sheet_name}' had no usable data.")
 
         if result_sheets:
             output_stream = build_output_excel(result_sheets)
             st.download_button(
-                label="📥 Download Converted Excel",
+                label="📥 Download Converted Excel (Converted_Output.xlsx)",
                 data=output_stream,
                 file_name="Converted_Output.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
