@@ -81,8 +81,7 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     
     # NEW FIX: Take the absolute magnitude of instantaneous power (PSum (W)) readings.
     # This ensures that both consumption (positive) and generation/export (negative) readings 
-    # contribute to the sum, preventing them from cancelling each other out and 
-    # resulting in non-zero sums for periods with activity.
+    # contribute to the aggregation, preventing them from cancelling each other out.
     df[POWER_COL_IN] = df[POWER_COL_IN].abs()
 
     # Set the valid timestamp column as the index for resampling
@@ -111,14 +110,14 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         if day_group.empty:
             continue
 
-        # Resample the PSum (W) column to 10-minute intervals. 
-        # Sum is used for aggregation, matching the requirement (00:00:00 up to 00:09:59...).
-        # Since we took the absolute value above, this correctly sums the magnitude of power flow.
+        # CRITICAL CHANGE: Switched from .sum() to .mean() for aggregation.
+        # This calculates the AVERAGE instantaneous power (W) over the 10-minute interval, 
+        # which is the correct output format for 'Active Power (W)' interval data.
         resampled_series = day_group[POWER_COL_IN].resample(
             '10min', 
             label='left', 
             origin='start'
-        ).sum()
+        ).mean()
 
         # Create the daily output DataFrame using the resampled data
         daily_output = pd.DataFrame({
@@ -144,7 +143,7 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         # of the Index to correctly generate the time stamps.
         final_daily_output['Local Time Stamp'] = [t.strftime('%H:%M') for t in final_daily_output.index]
 
-        # The kW calculation is now simply the Active Power (W) sum divided by 1000
+        # The kW calculation is now simply the Active Power (W) average divided by 1000
         final_daily_output['kW'] = final_daily_output['Active Power (W)'] / 1000
         
         # Final column selection and naming convention
