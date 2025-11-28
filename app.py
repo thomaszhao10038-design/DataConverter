@@ -1,139 +1,68 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-# Import openpyxl components for advanced Excel formatting
 from openpyxl import Workbook
-from openpyxl.styles import Alignment 
-
-# --- Configuration ---
-# Define the output header columns that repeat for each day (4 columns total)
-OUTPUT_HEADERS = [
-    'UTC Offset (minutes)', 
-    'Local Time Stamp', 
-    'Active Power (W)', 
-    'kW'
-]
-# Define a robust internal column name for PSum (W) aggregation
-POWER_COL_OUT = 'PSumW'
+from openpyxl.styles import Alignment
 
 # -----------------------------
 # ROUND TIMESTAMP TO 10 MIN
 # -----------------------------
 def round_to_10min(ts):
-    """
-    Rounds a timestamp down to the nearest 10-minute interval (e.g., 12:12:01 -> 12:10:00).
-    This function is primarily kept for context, as Pandas resampling now handles the aggregation.
-    """
-    if pd.isna(ts) or ts is None:
-        return pd.NaT
-    
-    # We round down (floor) to the start of the 10-minute interval
+    if pd.isna(ts):
+        return ts
     ts = pd.to_datetime(ts)
-    start_of_day = ts.normalize()
-    # Calculate total minutes since start of day
-    minutes_since_midnight = (ts - start_of_day).total_seconds() // 60
-    # Determine the floor to the nearest 10 minutes
-    rounded_minutes = (minutes_since_midnight // 10) * 10
-    
-    return start_of_day + pd.Timedelta(minutes=rounded_minutes)
+    m = ts.minute
+    r = m % 10
+    if r < 5:
+        new_m = m - r
+    else:
+        new_m = m + (10 - r)
+    if new_m == 60:
+        ts = ts.replace(minute=0) + pd.Timedelta(hours=1)
+    else:
+        ts = ts.replace(minute=new_m)
+    return ts.replace(second=0, microsecond=0)
 
 # -----------------------------
-# PROCESS SINGLE SHEET (IMPROVED PADDING & AGGREGATION)
+# PROCESS SINGLE SHEET
 # -----------------------------
 def process_sheet(df, timestamp_col, psum_col):
-    """
-    Processes a single sheet by rounding timestamps to 10-minute intervals, 
-    summing absolute power values in each interval, and ensuring all 10-minute 
-    intervals for the entire time range are present using Pandas reindexing.
-    """
-    # 1. Cleaning and Preparation
-    
-    # Ensure columns are stripped of leading/trailing spaces for reliable access
-    df.columns = df.columns.astype(str).str.strip()
-
-    # Convert timestamp. dayfirst=True handles DD/MM/YYYY format.
-    df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce", dayfirst=True)
-    
-    # Aggressively clean and ensure Power column is numeric
-    power_series = df[psum_col].astype(str).str.strip().str.replace(',', '.', regex=False)
-    df[psum_col] = pd.to_numeric(power_series, errors='coerce')
-    
-    # Drop rows where essential data is missing/invalid
+    # Convert timestamp
+    df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce")
     df = df.dropna(subset=[timestamp_col, psum_col])
-    
-    if df.empty:
-        # If no valid data is found, return an empty DataFrame
-        return pd.DataFrame()
 
-    # 2. Resample and Aggregate Data
-    
-    # Use absolute value to correctly sum total power magnitude
-    df[psum_col] = df[psum_col].abs()
-    
-    # Set the timestamp as index
-    df_indexed = df.set_index(timestamp_col)
-    
-    # Resample the data to a 10-minute frequency, taking the SUM of all readings in that window.
-    # 'label=left' is standard for power aggregation windows.
-    resampled_data = df_indexed[psum_col].resample(
-        '10min', 
-        label='left', 
-        origin='start'
-    ).sum()
-    
-    # Convert the aggregated Series back to a DataFrame
-    df_out = resampled_data.reset_index()
-    # Rename the PSum column to a simple, guaranteed name
-    df_out.columns = ['Rounded', POWER_COL_OUT] 
-    
-    # Store the set of original valid dates to filter the final padded range
-    original_dates = set(df_out['Rounded'].dt.date)
+    # Extract all unique dates from original timestamp
+    all_dates = pd.to_datetime(df[timestamp_col]).dt.date.unique()
+    all_dates = sorted(all_dates)
 
-    # 3. Robust Padding (Ensuring all 10-min slots for all days are present)
-    
-    min_date = df_out['Rounded'].min().normalize()
-    max_date = df_out['Rounded'].max().normalize()
-    
-    # Create a continuous 10-minute index covering the entire data range
-    full_time_index = pd.date_range(
-        start=min_date, 
-        # End at the start of the last 10-minute interval on the max_date
-        end=max_date + pd.Timedelta(hours=23, minutes=50), 
-        freq='10min'
-    )
+    rows = []
+    for d in all_dates:
+        # Generate all 10-minute intervals
+        intervals = pd.date_range("00:00", "23:50", freq="10min").time
+        day_data = df[df[timestamp_col].dt.date == d].copy()
+        day_data["Rounded"] = day_data[timestamp_col].apply(round_to_10min)
+        day_data["Time"] = day_data["Rounded"].dt.strftime("%H:%M:%S")
 
-    # Re-index the resampled data onto the full time index, filling missing intervals with 0
-    df_indexed_for_reindex = df_out.set_index('Rounded')
-    df_padded_series = df_indexed_for_reindex[POWER_COL_OUT].reindex(full_time_index, fill_value=0)
-    
-    # Convert back to DataFrame and clean up
-    grouped = df_padded_series.reset_index().rename(columns={'index': 'Rounded'})
-    grouped.columns = ['Rounded', POWER_COL_OUT]
+        # Aggregate PSum per interval
+        agg = day_data.groupby("Time")[psum_col].sum().reset_index()
 
-    # 4. Final Formatting
-    
-    # Extract date and time columns from the final padded (and now complete) time series
-    grouped["Date"] = grouped["Rounded"].dt.date
-    grouped["Time"] = grouped["Rounded"].dt.strftime("%H:%M")
+        # Merge with full intervals
+        full_day = pd.DataFrame({"Time": [t.strftime("%H:%M:%S") for t in intervals]})
+        merged = full_day.merge(agg, on="Time", how="left")
+        merged[psum_col] = merged[psum_col].fillna(0)
+        merged["Date"] = d
+        rows.append(merged)
 
-    # Filter the result to only include dates that were present in the original data.
-    # This prevents adding empty days after the last data point if the index went too far.
-    grouped = grouped[grouped["Date"].isin(original_dates)]
-    
-    # Final check: ensure the data has all days.
-    st.info(f"Total days processed and included: {len(grouped['Date'].unique())}")
-    
-    return grouped
+    result = pd.concat(rows, ignore_index=True)
+    result.rename(columns={psum_col: "PSum (W)"}, inplace=True)
+    return result
 
 # -----------------------------
 # BUILD EXCEL FORMAT
 # -----------------------------
 def build_output_excel(sheets_dict):
-    """Builds the final Excel workbook with the wide, merged column format."""
     wb = Workbook()
-    # Remove the default sheet created by openpyxl
-    if 'Sheet' in wb.sheetnames:
-         wb.remove(wb['Sheet'])
+    wb.remove(wb.active)
 
     for sheet_name, df in sheets_dict.items():
         ws = wb.create_sheet(sheet_name)
@@ -141,39 +70,27 @@ def build_output_excel(sheets_dict):
 
         col_start = 1
         for date in dates:
-            date_str = date.strftime('%Y-%m-%d')
-            
-            # 1. Merge date header (Row 1, columns 1 to 4)
+            # Merge date header
             ws.merge_cells(start_row=1, start_column=col_start, end_row=1, end_column=col_start+3)
-            ws.cell(row=1, column=col_start, value=date_str)
-            ws.cell(row=1, column=col_start).alignment = Alignment(horizontal="center", vertical="center")
+            ws.cell(row=1, column=col_start, value=str(date))
+            ws.cell(row=1, column=col_start).alignment = Alignment(horizontal="center")
 
-            # 2. Sub-headers (Row 2)
+            # Sub-headers
             ws.cell(row=2, column=col_start, value="UTC Offset (minutes)")
             ws.cell(row=2, column=col_start+1, value="Local Time Stamp")
             ws.cell(row=2, column=col_start+2, value="Active Power (W)")
             ws.cell(row=2, column=col_start+3, value="kW")
 
-            # 3. Fill 10-min rows (Data starts on Row 3)
-            # Filter and ensure data is sorted by time for correct order
-            day_data = df[df["Date"] == date].sort_values("Time")
-            
-            for idx, r in enumerate(day_data.itertuples(), start=3):
-                # Column 1: UTC Offset (Date)
-                ws.cell(row=idx, column=col_start, value=date_str) 
-                
-                # Column 2: Local Time Stamp
-                ws.cell(row=idx, column=col_start+1, value=r.Time) 
-                
-                # Column 3: Active Power (W) - The aggregated sum
-                # Access the column by its guaranteed name (PSumW)
-                power_w = getattr(r, POWER_COL_OUT)
-                ws.cell(row=idx, column=col_start+2, value=power_w)
-                
-                # Column 4: kW (W / 1000)
-                ws.cell(row=idx, column=col_start+3, value=power_w / 1000)
+            # Fill 10-min rows
+            day_data = df[df["Date"] == date].sort_values("Time").reset_index(drop=True)
+            for idx, r in day_data.iterrows():
+                excel_row = idx + 3  # start at row 3
+                ws.cell(row=excel_row, column=col_start, value=str(r["Date"]))
+                ws.cell(row=excel_row, column=col_start+1, value=r["Time"])
+                ws.cell(row=excel_row, column=col_start+2, value=r["PSum (W)"])
+                ws.cell(row=excel_row, column=col_start+3, value=r["PSum (W)"]/1000)
 
-            col_start += 4  # Move to the start of the next day block
+            col_start += 4  # next day block
 
     stream = BytesIO()
     wb.save(stream)
@@ -183,68 +100,49 @@ def build_output_excel(sheets_dict):
 # -----------------------------
 # STREAMLIT UI
 # -----------------------------
-def app():
-    st.title("📊 Excel 10-Minute Electricity Data Converter")
-    st.markdown("""
-        Upload an Excel file (.xlsx) with time-series data. Each sheet is processed 
-        separately to calculate the total absolute power (W) consumed/generated 
-        in fixed 10-minute intervals. The output is a wide format file suitable for analysis.
-        """)
+st.title("📊 Excel 10-Minute Electricity Data Converter")
+st.write("Upload an Excel file. Each sheet will be processed separately.")
 
-    uploaded = st.file_uploader("Upload .xlsx file", type=["xlsx"])
+uploaded = st.file_uploader("Upload .xlsx file", type=["xlsx"])
 
-    if uploaded:
-        xls = pd.ExcelFile(uploaded)
-        result_sheets = {}
+if uploaded:
+    xls = pd.ExcelFile(uploaded)
+    result_sheets = {}
 
-        for sheet_name in xls.sheet_names:
-            st.info(f"Preparing to process sheet: **{sheet_name}**")
-            try:
-                # Use Pandas to read the sheet
-                df = pd.read_excel(uploaded, sheet_name=sheet_name)
-            except Exception as e:
-                st.error(f"Error reading sheet '{sheet_name}'. {e}")
-                continue
+    for sheet_name in xls.sheet_names:
+        st.write(f"Processing sheet: **{sheet_name}**")
+        df = pd.read_excel(uploaded, sheet_name=sheet_name)
 
-            # Clean column names for robust matching
-            df.columns = df.columns.astype(str).str.strip()
+        # Auto-detect timestamp column
+        possible_time_cols = [
+            "Date & Time", "Date&Time", "Date_Time",
+            "Timestamp", "TimeStamp", "DateTime", "Date Time",
+            "LocalTime", "Local Time", "TIME", "time", "datetime",
+            "Date", "date", "ts"
+        ]
+        timestamp_col = next((col for col in df.columns if col.strip() in possible_time_cols), None)
+        if timestamp_col is None:
+            st.error(f"No valid timestamp column in sheet {sheet_name}. Columns: {list(df.columns)}")
+            continue
 
-            # Auto-detect timestamp column
-            possible_time_cols = ["Date & Time", "Date&Time", "Timestamp", "DateTime", "Local Time", "TIME", "ts"]
-            timestamp_col = next((col for col in df.columns if col in possible_time_cols), None)
-            
-            if timestamp_col is None:
-                st.error(f"No valid timestamp column found in sheet **{sheet_name}**. (Tried: {', '.join(possible_time_cols)})")
-                continue
+        # Auto-detect PSum column
+        possible_psum_cols = [
+            "PSum (W)", "Psum (W)", "psum", "PSum", "Psum",
+            "Power", "Active Power", "ActivePower", "P (W)"
+        ]
+        psum_col = next((col for col in df.columns if col.strip() in possible_psum_cols), None)
+        if psum_col is None:
+            st.error(f"No valid PSum column in sheet {sheet_name}. Columns: {list(df.columns)}")
+            continue
 
-            # Auto-detect PSum column
-            possible_psum_cols = ["PSum (W)", "Psum (W)", "PSum", "P (W)", "Power"]
-            psum_col = next((col for col in df.columns if col in possible_psum_cols), None)
-            
-            if psum_col is None:
-                st.error(f"No valid PSum column found in sheet **{sheet_name}**. (Tried: {', '.join(possible_psum_cols)})")
-                continue
+        processed = process_sheet(df, timestamp_col, psum_col)
+        result_sheets[sheet_name] = processed
 
-            processed = process_sheet(df, timestamp_col, psum_col)
-            
-            if not processed.empty:
-                result_sheets[sheet_name] = processed
-                st.success(f"Sheet **{sheet_name}** processed successfully.")
-            else:
-                st.warning(f"Sheet **{sheet_name}** contained no usable data after cleaning.")
-
-
-        if result_sheets:
-            output_stream = build_output_excel(result_sheets)
-            st.success("All valid sheets converted to wide format.")
-            st.download_button(
-                label="📥 Download Converted Excel",
-                data=output_stream,
-                file_name="Converted_Output.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        elif uploaded and not result_sheets:
-             st.error("No sheets were successfully processed. Please check the input file for correct column names and data.")
-
-if __name__ == '__main__':
-    app()
+    if result_sheets:
+        output_stream = build_output_excel(result_sheets)
+        st.download_button(
+            label="📥 Download Converted Excel",
+            data=output_stream,
+            file_name="Converted_Output.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
