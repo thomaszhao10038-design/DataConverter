@@ -121,6 +121,10 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         # Re-index against the full 144-row template to fill missing intervals with NaN
         final_daily_output = template_df.join(daily_output, how='left')
         
+        # CRITICAL FIX: Replace NaN values (periods with no readings) with 0, 
+        # as the requirement is to register 0 power use if no instantaneous data exists.
+        final_daily_output['Active Power (W)'] = final_daily_output['Active Power (W)'].fillna(0)
+        
         # Calculate derived metrics and set the required output columns
         final_daily_output['UTC Offset (minutes)'] = date.strftime('%Y-%m-%d')
         
@@ -128,7 +132,7 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         # of the Index to correctly generate the time stamps.
         final_daily_output['Local Time Stamp'] = [t.strftime('%H:%M') for t in final_daily_output.index]
 
-        # These columns should now be filled because Active Power (W) is numeric
+        # These columns should now be filled because Active Power (W) is numeric (or 0)
         final_daily_output['kW'] = final_daily_output['Active Power (W)'].abs() / 1000
         
         # Final column selection and naming convention
