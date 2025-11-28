@@ -82,11 +82,12 @@ def build_output_excel(sheets_dict):
 
             # Fill 10-min rows
             day_data = df[df["Date"] == date].sort_values("Time")
-            for idx, r in enumerate(day_data.itertuples(), start=3):
-                ws.cell(row=idx, column=col_start, value=str(date))
-                ws.cell(row=idx, column=col_start+1, value=r.Time)
-                ws.cell(row=idx, column=col_start+2, value=r._3)  # PSum (W)
-                ws.cell(row=idx, column=col_start+3, value=r._3/1000)
+            for idx, r in day_data.iterrows():
+                excel_row = idx + 3  # start from row 3
+                ws.cell(row=excel_row, column=col_start, value=str(r["Date"]))
+                ws.cell(row=excel_row, column=col_start+1, value=r["Time"])
+                ws.cell(row=excel_row, column=col_start+2, value=r["PSum (W)"])
+                ws.cell(row=excel_row, column=col_start+3, value=r["PSum (W)"]/1000)
 
             col_start += 4  # next day block
 
