@@ -52,12 +52,15 @@ def transform_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     df = df.dropna(subset=[TIMESTAMP_COL]).sort_values(by=TIMESTAMP_COL).reset_index(drop=True)
     
     # FIX: Explicitly clean and ensure Power column is numeric before aggregation
-    # 1. Convert to string and strip whitespace (in case of hidden chars/spaces)
-    df[POWER_COL_IN] = df[POWER_COL_IN].astype(str).str.strip()
+    # The 'decimal' keyword is causing an error due to Pandas version incompatibility.
+    # We must manually replace commas (,) with periods (.) for decimal separation.
     
-    # 2. Coerce non-numeric values to NaN, specifically handling comma as a decimal separator
-    # This is often the fix for international Excel files
-    df[POWER_COL_IN] = pd.to_numeric(df[POWER_COL_IN], errors='coerce', decimal=',')
+    # 1. Convert to string, strip whitespace, and replace commas
+    power_series = df[POWER_COL_IN].astype(str).str.strip()
+    power_series = power_series.str.replace(',', '.', regex=False)
+    
+    # 2. Coerce non-numeric values to NaN (now using '.' as decimal)
+    df[POWER_COL_IN] = pd.to_numeric(power_series, errors='coerce')
     
     # 3. Drop rows where power value is invalid
     df = df.dropna(subset=[POWER_COL_IN])
