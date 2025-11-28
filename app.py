@@ -2,20 +2,28 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 from openpyxl import Workbook
-# Import PatternFill, Font, numbers, and the necessary chart components
 from openpyxl.styles import Alignment, PatternFill, Font, Border, Side, numbers
 from openpyxl.chart import LineChart, Reference
-from openpyxl.chart.series import Series # Crucial for chart data
+from openpyxl.chart.series import Series
 
 # --- Configuration ---
 POWER_COL_OUT = 'PSumW'
 
+# Output Column mapping (relative to col_start, 1-based index in the 4-column block)
+COL_UTC_REL = 1    # UTC Offset (merged column)
+COL_TIME_REL = 2   # Local Time Stamp (X-Axis Categories)
+COL_W_REL = 3      # Active Power (W)
+COL_KW_REL = 4     # kW (Y-Axis Data)
+COL_BLOCK_WIDTH = 4
+
 # -----------------------------
-# PROCESS SINGLE SHEET (FINAL ROBUST VERSION)
+# PROCESS SINGLE SHEET (TIDY DATAFRAME GENERATION)
 # -----------------------------
 def process_sheet(df, timestamp_col, psum_col):
     """
-    Processes a single sheet, including robust date handling and full padding.
+    Processes a single sheet: cleans data, handles dates, aggregates to 10-min sums,
+    and pads the result to ensure continuous 10-min slots for all days present.
+    Returns a tidy DataFrame ready for Excel formatting.
     """
     # 1. Cleaning and Preparation
     
@@ -31,9 +39,7 @@ def process_sheet(df, timestamp_col, psum_col):
     if df.empty:
         return pd.DataFrame()
     
-    # 2. Aggregate Data (Fixed Logic)
-    
-    # df[psum_col] = df[psum_col].abs() is REMOVED to preserve the sign
+    # 2. Aggregate Data
     
     df_indexed = df.set_index(timestamp_col)
     
@@ -46,29 +52,23 @@ def process_sheet(df, timestamp_col, psum_col):
     df_out = resampled_data.reset_index()
     df_out.columns = ['Rounded', POWER_COL_OUT] 
     
-    # 3. Robust Padding (Ensuring all 10-min slots for all days are present)
+    # 3. Robust Padding
     
     if df_out.empty or df_out['Rounded'].isna().all():
         return pd.DataFrame()
     
-    # Store the set of original valid dates to filter the final padded range
     original_dates = set(df_out['Rounded'].dt.date)
 
-    # Use floor('D') and ceil('D') for robust date range calculation
     min_dt = df_out['Rounded'].min().floor('D')
     max_dt_exclusive = df_out['Rounded'].max().ceil('D') 
     
-    # Ensure the date range is valid (start < end)
     if min_dt >= max_dt_exclusive:
         return pd.DataFrame()
 
-    # Create a continuous 10-minute index covering the entire data range
     full_time_index = pd.date_range(
-        # Convert to native Python datetime objects for compatibility
         start=min_dt.to_pydatetime(), 
         end=max_dt_exclusive.to_pydatetime(),
         freq='10min',
-        # FIX: Replaced 'closed' with 'inclusive' for Pandas version compatibility
         inclusive='left' 
     )
 
@@ -91,7 +91,7 @@ def process_sheet(df, timestamp_col, psum_col):
     return grouped
 
 # -----------------------------
-# BUILD EXCEL FORMAT
+# BUILD EXCEL FORMAT (REFACTORED FOR STABILITY)
 # -----------------------------
 def build_output_excel(sheets_dict):
     """Builds the final Excel workbook with the wide, merged column format and includes a daily max kW chart."""
@@ -103,12 +103,10 @@ def build_output_excel(sheets_dict):
     header_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid') # Light Blue
     title_font = Font(bold=True, size=12)
     header_font = Font(bold=True)
-    # Define a thin black border
     thin_border = Border(left=Side(style='thin'), 
                           right=Side(style='thin'), 
                           top=Side(style='thin'), 
                           bottom=Side(style='thin'))
-    # Alternating row color (AliceBlue)
     data_fill_alt = PatternFill(start_color='F0F8FF', end_color='F0F8FF', fill_type='solid')
 
 
@@ -117,128 +115,108 @@ def build_output_excel(sheets_dict):
         dates = sorted(df["Date"].unique())
 
         col_start = 1
-        daily_max_summary = [] # List to store max kW for the final summary table
-        max_row_used = 0 # Track the lowest row written to across all columns
+        daily_max_summary = []
+        max_row_used = 0
         
-        # Define containers to store column references for charting
-        chart_categories_ref = None # Will store the reference to the first 'Local Time Stamp' column
-        chart_data_refs = [] # Will store Series objects for each day's kW data
+        chart_categories_ref = None 
+        chart_series_list = [] # List to hold correctly instantiated openpyxl Series objects
 
 
         for date in dates:
-            # 1. Update date format to DD-Mon (e.g., 12-Nov) for the summary table
             date_str_short = date.strftime('%d-%b') 
-            
-            # Use original date string for main table header
-            date_str_full = date.strftime('%Y-%m-%d') # This will be the chart Series title
+            date_str_full = date.strftime('%Y-%m-%d')
             
             day_data = df[df["Date"] == date].sort_values("Time")
             data_rows_count = len(day_data)
+            
+            # Data starts on Row 3
             merge_start_row = 3
             merge_end_row = 2 + data_rows_count
             
-            # 1. Merge date header (Row 1, columns 1 to 4)
-            ws.merge_cells(start_row=1, start_column=col_start, end_row=1, end_column=col_start+3)
-            ws.cell(row=1, column=col_start, value=date_str_full) # Use full date for column headers
-            ws.cell(row=1, column=col_start).alignment = Alignment(horizontal="center", vertical="center")
+            # --- 1. Merge date header (Row 1, columns 1 to 4) ---
+            ws.merge_cells(start_row=1, start_column=col_start, end_row=1, end_column=col_start + COL_BLOCK_WIDTH - 1)
+            ws.cell(row=1, column=col_start, value=date_str_full).alignment = Alignment(horizontal="center", vertical="center")
 
-            # 2. Sub-headers (Row 2)
-            ws.cell(row=2, column=col_start, value="UTC Offset (minutes)")
-            ws.cell(row=2, column=col_start+1, value="Local Time Stamp")
-            ws.cell(row=2, column=col_start+2, value="Active Power (W)")
-            ws.cell(row=2, column=col_start+3, value="kW")
+            # --- 2. Sub-headers (Row 2) ---
+            ws.cell(row=2, column=col_start + COL_UTC_REL - 1, value="UTC Offset (minutes)")
+            ws.cell(row=2, column=col_start + COL_TIME_REL - 1, value="Local Time Stamp")
+            ws.cell(row=2, column=col_start + COL_W_REL - 1, value="Active Power (W)")
+            ws.cell(row=2, column=col_start + COL_KW_REL - 1, value="kW")
 
-            # 3. Handle UTC Offset (minutes) Column Merging (FIXED)
+            # --- 3. UTC Offset Column Merging ---
             if data_rows_count > 0:
-                # Merge the UTC Offset column for all data rows of this day
-                ws.merge_cells(start_row=merge_start_row, 
-                                 start_column=col_start, 
-                                 end_row=merge_end_row, 
-                                 end_column=col_start)
-                
-                # Set the UTC Offset value to the DATE STRING and center alignment
-                utc_cell = ws.cell(row=merge_start_row, column=col_start, value=date_str_full)
+                utc_col = col_start + COL_UTC_REL - 1
+                ws.merge_cells(start_row=merge_start_row, start_column=utc_col, end_row=merge_end_row, end_column=utc_col)
+                utc_cell = ws.cell(row=merge_start_row, column=utc_col, value=date_str_full)
                 utc_cell.alignment = Alignment(horizontal="center", vertical="center")
 
 
-            # 4. Fill 10-min rows (Data starts on Row 3)
-            for idx, r in enumerate(day_data.itertuples(), start=3):
-                # Column 1 (col_start) is now skipped as its value is set in the merged block above.
-                
-                # Column 2: Local Time Stamp (col_start + 1)
-                ws.cell(row=idx, column=col_start+1, value=r.Time) 
-                
-                # Column 3: Active Power (W) (col_start + 2) - Retains sign (NO ABSOLUTE VALUE).
+            # --- 4. Fill 10-min rows (Data starts on Row 3) ---
+            for idx, r in enumerate(day_data.itertuples(), start=merge_start_row):
                 power_w = getattr(r, POWER_COL_OUT)
-                ws.cell(row=idx, column=col_start+2, value=power_w)
                 
-                # Column 4: kW (W / 1000) (col_start + 3) - Applies absolute value (ABS).
-                ws.cell(row=idx, column=col_start+3, value=abs(power_w) / 1000)
+                # Column 2: Local Time Stamp
+                ws.cell(row=idx, column=col_start + COL_TIME_REL - 1, value=r.Time) 
+                
+                # Column 3: Active Power (W) - Retains sign
+                ws.cell(row=idx, column=col_start + COL_W_REL - 1, value=power_w)
+                
+                # Column 4: kW (W / 1000) - Applies absolute value
+                ws.cell(row=idx, column=col_start + COL_KW_REL - 1, value=abs(power_w) / 1000)
 
             
-            # 5. Add summary statistics (Total, Average, Max)
+            # --- 5. Add summary statistics (Total, Average, Max) ---
             if data_rows_count > 0:
-                # Calculations
                 sum_w = day_data[POWER_COL_OUT].sum()
                 mean_w = day_data[POWER_COL_OUT].mean()
                 max_w = day_data[POWER_COL_OUT].max()
                 
-                # kW stats are calculated on the absolute values, as per the kW column's logic.
                 sum_kw_abs = day_data[POWER_COL_OUT].abs().sum() / 1000
                 mean_kw_abs = day_data[POWER_COL_OUT].abs().mean() / 1000
                 max_kw_abs = day_data[POWER_COL_OUT].abs().max() / 1000
                 
-                # Determine starting row for summaries (1 row below the last data row)
                 stats_row_start = merge_end_row + 1
                 
                 # TOTAL Row
-                ws.cell(row=stats_row_start, column=col_start + 1, value="Total")
-                ws.cell(row=stats_row_start, column=col_start + 2, value=sum_w)
-                ws.cell(row=stats_row_start, column=col_start + 3, value=sum_kw_abs)
+                ws.cell(row=stats_row_start, column=col_start + COL_TIME_REL - 1, value="Total")
+                ws.cell(row=stats_row_start, column=col_start + COL_W_REL - 1, value=sum_w)
+                ws.cell(row=stats_row_start, column=col_start + COL_KW_REL - 1, value=sum_kw_abs)
                 
                 # AVERAGE Row
-                ws.cell(row=stats_row_start + 1, column=col_start + 1, value="Average")
-                ws.cell(row=stats_row_start + 1, column=col_start + 2, value=mean_w)
-                ws.cell(row=stats_row_start + 1, column=col_start + 3, value=mean_kw_abs)
+                ws.cell(row=stats_row_start + 1, column=col_start + COL_TIME_REL - 1, value="Average")
+                ws.cell(row=stats_row_start + 1, column=col_start + COL_W_REL - 1, value=mean_w)
+                ws.cell(row=stats_row_start + 1, column=col_start + COL_KW_REL - 1, value=mean_kw_abs)
                 
                 # MAX Row
-                ws.cell(row=stats_row_start + 2, column=col_start + 1, value="Max")
-                ws.cell(row=stats_row_start + 2, column=col_start + 2, value=max_w)
-                ws.cell(row=stats_row_start + 2, column=col_start + 3, value=max_kw_abs)
+                ws.cell(row=stats_row_start + 2, column=col_start + COL_TIME_REL - 1, value="Max")
+                ws.cell(row=stats_row_start + 2, column=col_start + COL_W_REL - 1, value=max_w)
+                ws.cell(row=stats_row_start + 2, column=col_start + COL_KW_REL - 1, value=max_kw_abs)
                 
-                # Update max row used for final summary placement
                 max_row_used = max(max_row_used, stats_row_start + 2)
                 
-                # Collect data for final summary table using short date format
                 daily_max_summary.append((date_str_short, max_kw_abs))
                 
-                # --- Chart Data Tracking (FINAL ROBUST SERIES CREATION) ---
-                # The first day's Local Time Stamp column provides the categories (x-axis)
+                # --- 6. Chart Data Preparation (using Constructor Fix) ---
+                
+                # Categories (X-axis) reference (Local Time Stamp column)
                 if chart_categories_ref is None:
-                    # Categories start at row 3, column col_start + 1 (Local Time Stamp)
-                    chart_categories_ref = Reference(ws, min_col=col_start + 1, min_row=merge_start_row, max_row=merge_end_row)
+                    cat_col = col_start + COL_TIME_REL - 1
+                    chart_categories_ref = Reference(ws, min_col=cat_col, min_row=merge_start_row, max_row=merge_end_row)
 
-                # Data for kW column (Y-axis series)
-                # Data starts at row 3, column col_start + 3 (kW)
-                data_ref = Reference(ws, min_col=col_start + 3, min_row=merge_start_row, max_row=merge_end_row, max_col=col_start + 3)
+                # Data (Y-axis) reference (kW column)
+                data_col = col_start + COL_KW_REL - 1
+                data_ref = Reference(ws, min_col=data_col, min_row=merge_start_row, max_row=merge_end_row, max_col=data_col)
                 
-                # FIX: Use the date string directly as the title to avoid openpyxl descriptor errors
-                series_title_string = date_str_full
+                # FIX: Use Series constructor with values and title (string)
+                series = Series(values=data_ref, title=date_str_full)
                 
-                # Instantiate Series with no arguments
-                series_idx = len(chart_data_refs)
-                series = Series()
-                series.idx = series_idx      
-                series.values = data_ref     
-                series.title = series_title_string # Assign simple string title
-
-                chart_data_refs.append(series)
+                chart_series_list.append(series)
 
 
-            col_start += 4
+            col_start += COL_BLOCK_WIDTH
             
-        # 7. Add Line Chart for Daily Power Profiles
-        if chart_data_refs and chart_categories_ref:
+        # --- 7. Add Line Chart for Daily Power Profiles ---
+        if chart_series_list and chart_categories_ref:
             chart = LineChart()
             chart.style = 10
             chart.title = f"Daily 10-Minute Absolute Power Profile - {sheet_name}"
@@ -246,75 +224,50 @@ def build_output_excel(sheets_dict):
             chart.x_axis.title = "Time"
 
             # Add all series data
-            for series in chart_data_refs:
+            for series in chart_series_list:
                 chart.series.append(series)
                 
             # Set the categories (X-axis labels)
             chart.set_categories(chart_categories_ref)
 
-            # Position the chart below the main data blocks, starting at column G (7)
-            # This ensures it doesn't overlap the final summary table starting at A1
             chart_anchor = f'G{max_row_used + 2}'
             ws.add_chart(chart, chart_anchor)
             
             # Update max_row_used to ensure the summary table starts below the chart
-            max_row_used = max(max_row_used, max_row_used + 22) # Assume chart takes ~20 rows
+            max_row_used = max(max_row_used, max_row_used + 22)
 
 
-        # 6. Add final summary table for Max kW across all days
+        # --- 8. Add final summary table for Max kW across all days ---
         if daily_max_summary:
-            # Start the summary table 2 rows below the end of the last day block
             final_summary_row = max_row_used + 2 
             
-            # --- Summary Table Title (Merged over 2 columns) ---
+            # Title
             title_cell = ws.cell(row=final_summary_row, column=1, value="Daily Max Power (kW) Summary")
             ws.merge_cells(start_row=final_summary_row, start_column=1, end_row=final_summary_row, end_column=2)
             title_cell.alignment = Alignment(horizontal="center", vertical="center")
             title_cell.font = title_font
 
-            # --- Summary Table Headers ---
+            # Headers
             final_summary_row += 1
-            header_row = final_summary_row
-            
-            # Header Column 1: Day
-            day_header_cell = ws.cell(row=header_row, column=1, value="Day")
-            day_header_cell.fill = header_fill
-            day_header_cell.font = header_font
-            day_header_cell.border = thin_border
-            day_header_cell.alignment = Alignment(horizontal="center")
-            
-            # Header Column 2: Max (kW)
-            max_header_cell = ws.cell(row=header_row, column=2, value="Max (kW)")
-            max_header_cell.fill = header_fill
-            max_header_cell.font = header_font
-            max_header_cell.border = thin_border
-            max_header_cell.alignment = Alignment(horizontal="center")
+            ws.cell(row=final_summary_row, column=1, value="Day").fill = header_fill
+            ws.cell(row=final_summary_row, column=2, value="Max (kW)").fill = header_fill
 
-
-            # --- Write data (applying 2dp formatting and color) ---
+            # Data
             for date_str, max_kw in daily_max_summary:
                 final_summary_row += 1
+                fill_style = data_fill_alt if (final_summary_row % 2) == 0 else PatternFill(fill_type=None)
                 
-                # Apply alternating row color
-                if (final_summary_row % 2) == 0:
-                    fill_style = data_fill_alt
-                else:
-                    fill_style = PatternFill(fill_type=None) # No fill for odd rows
-                
-                # Column 1: Day (DD-Mon format)
                 day_cell = ws.cell(row=final_summary_row, column=1, value=date_str)
                 day_cell.border = thin_border
                 day_cell.fill = fill_style
                 day_cell.alignment = Alignment(horizontal="center")
                 
-                # Column 2: Max (kW) - Value rounded to 2dp and explicitly formatted
                 max_cell = ws.cell(row=final_summary_row, column=2, value=max_kw)
-                max_cell.number_format = numbers.FORMAT_NUMBER_00 # Ensures 2 decimal places (e.g., 0.00)
+                max_cell.number_format = numbers.FORMAT_NUMBER_00
                 max_cell.border = thin_border
                 max_cell.fill = fill_style
                 max_cell.alignment = Alignment(horizontal="right")
                 
-            # Auto-size the summary columns for readability
             ws.column_dimensions['A'].width = 15
             ws.column_dimensions['B'].width = 15
 
@@ -332,7 +285,7 @@ def app():
     st.markdown("""
         Upload an **Excel file (.xlsx)** with time-series data. Each sheet is processed 
         separately to calculate the total absolute power (W) consumed/generated 
-        in fixed **10-minute intervals**. The output Excel file now includes a **line chart** showing the daily kW profiles and a **Max Power Summary table**.
+        in fixed **10-minute intervals**. The output Excel file now includes a robust **line chart** showing the daily kW profiles and a **Max Power Summary table**.
         """)
 
     uploaded = st.file_uploader("Upload .xlsx file", type=["xlsx"])
@@ -365,7 +318,6 @@ def app():
                 st.error(f"No valid **PSum** column found in sheet **{sheet_name}**.")
                 continue
             
-            # Process the sheet
             try:
                 processed = process_sheet(df, timestamp_col, psum_col)
             except Exception as e:
