@@ -6,7 +6,7 @@ from openpyxl.styles import Alignment, PatternFill, Font, Border, Side, numbers
 from openpyxl.chart import LineChart, Reference, Series
 from openpyxl.utils import get_column_letter
 from openpyxl.drawing.line import LineProperties
-from openpyxl.drawing.marker import MarkerProperties
+from openpyxl.chart.marker import MarkerProperties # <-- CORRECTED IMPORT PATH
 
 # --- Configuration ---
 POWER_COL_OUT = 'PSumW'
@@ -319,9 +319,8 @@ def build_output_excel(sheets_dict):
                 data_ref = Reference(ws_total, min_col=col, min_row=1, max_col=col, max_row=data_max_row)
                 s = Series(values=data_ref, title_from_data=True)
                 
-                # Apply desired styling for individual sheets: thinner line, with markers
+                # Apply desired styling for individual sheets: thinner line, with circular markers
                 s.graphicalProperties.line = LineProperties(w=15000) # Thinner line (1.5pt)
-                # Add markers (openpyxl supports triangle, diamond, circle, etc.)
                 s.marker = MarkerProperties('circle')
                 
                 chart_total.series.append(s)
@@ -332,8 +331,9 @@ def build_output_excel(sheets_dict):
             
             s_total = Series(values=data_ref_total, title_from_data=True)
             
-            # Style the Total Load series: thicker, red line, with markers
-            s_total.graphicalProperties.line = LineProperties(w=40000, solidFill="00B050") # Thicker, Green line (4pt, hex code for green)
+            # Style the Total Load series: thicker, green line, with triangular markers
+            # Using Green color code: '00B050' (or a suitable green/red)
+            s_total.graphicalProperties.line = LineProperties(w=40000, solidFill="00B050") 
             s_total.marker = MarkerProperties('triangle')
 
             chart_total.series.append(s_total)
