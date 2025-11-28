@@ -1,64 +1,140 @@
+import streamlit as st
 import pandas as pd
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import StreamingResponse
 from io import BytesIO
-from openpyxl.writer.excel import save_virtual_workbook
+from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
+from openpyxl.styles import Alignment
 
-app = FastAPI()
 
-
+# -----------------------------
+# ROUND TIMESTAMP TO 10 MIN
+# -----------------------------
 def round_to_10min(ts):
     if pd.isna(ts):
         return ts
 
     ts = pd.to_datetime(ts)
-    minutes = ts.minute
-    remainder = minutes % 10
+    m = ts.minute
+    r = m % 10
 
-    if remainder < 5:
-        rounded = minutes - remainder
+    if r < 5:
+        new_m = m - r
     else:
-        rounded = minutes + (10 - remainder)
+        new_m = m + (10 - r)
 
-    if rounded == 60:
+    if new_m == 60:
         ts = ts.replace(minute=0) + pd.Timedelta(hours=1)
     else:
-        ts = ts.replace(minute=rounded)
+        ts = ts.replace(minute=new_m)
 
     return ts.replace(second=0, microsecond=0)
 
 
-@app.post("/convert")
-async def convert_file(
-    file: UploadFile = File(...),
-    timestamp_column: str = Form("Timestamp")
-):
-    try:
-        # Read uploaded Excel file
-        df = pd.read_excel(file.file)
+# -----------------------------
+# PROCESS SINGLE SHEET
+# -----------------------------
+def process_sheet(df, timestamp_col="Timestamp", psum_col="PSum (W)"):
 
-        if timestamp_column not in df.columns:
-            return {"error": f"Column '{timestamp_column}' not found."}
+    df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce")
+    df["Rounded"] = df[timestamp_col].apply(round_to_10min)
 
-        # Apply rounding
-        df["Rounded_Time"] = df[timestamp_column].apply(round_to_10min)
+    # Extract date and time
+    df["Date"] = df["Rounded"].dt.date
+    df["Time"] = df["Rounded"].dt.strftime("%H:%M:%S")
 
-        # Convert to output Excel
-        output_stream = BytesIO()
-        excel_data = save_virtual_workbook(df.to_excel(index=False))
-        output_stream.write(excel_data)
-        output_stream.seek(0)
+    # Group by bucket
+    grouped = df.groupby(["Date", "Time"])[psum_col].sum().reset_index()
 
-        return StreamingResponse(
-            output_stream,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": "attachment; filename=converted.xlsx"}
+    return grouped
+
+
+# -----------------------------
+# BUILD EXCEL FORMAT
+# -----------------------------
+def build_output_excel(sheets_dict):
+    wb = Workbook()
+    wb.remove(wb.active)  # remove default sheet
+
+    for sheet_name, df in sheets_dict.items():
+        ws = wb.create_sheet(sheet_name)
+
+        dates = sorted(df["Date"].unique())
+        start_row = 2
+
+        # Write headers for each day
+        col_start = 1
+        for date in dates:
+            ws.merge_cells(
+                start_row=1, start_column=col_start, end_row=1, end_column=col_start+3
+            )
+            ws.cell(row=1, column=col_start, value=str(date))
+            ws.cell(row=1, column=col_start).alignment = Alignment(horizontal="center")
+
+            ws.cell(row=2, column=col_start, value="UTC Offset (minutes)")
+            ws.cell(row=2, column=col_start+1, value="Local Time Stamp")
+            ws.cell(row=2, column=col_start+2, value="Active Power (W)")
+            ws.cell(row=2, column=col_start+3, value="kW")
+
+            # Extract this day's data
+            day_data = df[df["Date"] == date].copy()
+            # sort by time
+            day_data = day_data.sort_values("Time")
+
+            row_ptr = 3
+            for _, r in day_data.iterrows():
+                ws.cell(row=row_ptr, column=col_start, value=str(date))
+                ws.cell(row=row_ptr, column=col_start+1, value=r["Time"])
+                ws.cell(row=row_ptr, column=col_start+2, value=r["PSum (W)"])
+                ws.cell(row=row_ptr, column=col_start+3, value=(r["PSum (W)"])/1000 if pd.notna(r["PSum (W)"]) else None)
+                row_ptr += 1
+
+            col_start += 4  # shift to next 4-column block
+
+    # Save to bytes
+    stream = BytesIO()
+    wb.save(stream)
+    stream.seek(0)
+    return stream
+
+
+# -----------------------------
+# STREAMLIT UI
+# -----------------------------
+st.title("📊 Excel 10-Minute Electricity Data Converter")
+st.write("Upload an Excel file. Each sheet will be processed separately.")
+
+uploaded = st.file_uploader("Upload .xlsx file", type=["xlsx"])
+
+if uploaded:
+    xls = pd.ExcelFile(uploaded)
+    result_sheets = {}
+
+    for sheet_name in xls.sheet_names:
+        st.write(f"Processing sheet: **{sheet_name}**")
+
+        df = pd.read_excel(uploaded, sheet_name=sheet_name)
+
+        # auto-detect columns
+        timestamp_col = "Timestamp"
+        psum_col = "PSum (W)"
+
+        if timestamp_col not in df.columns:
+            st.error(f"❌ Column '{timestamp_col}' not found in {sheet_name}")
+            continue
+
+        if psum_col not in df.columns:
+            st.error(f"❌ Column '{psum_col}' not found in {sheet_name}")
+            continue
+
+        processed = process_sheet(df, timestamp_col, psum_col)
+        result_sheets[sheet_name] = processed
+
+    if result_sheets:
+        output_stream = build_output_excel(result_sheets)
+
+        st.download_button(
+            label="📥 Download Converted Excel",
+            data=output_stream,
+            file_name="Converted_Output.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.get("/")
-def home():
-    return {"status": "Data Converter API is running!"}
