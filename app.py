@@ -225,9 +225,11 @@ def build_output_excel(sheets_dict):
                 # NEW: Create a Reference for the series title (the merged date header in Row 1)
                 title_ref = Reference(ws, min_col=col_start, min_row=1)
                 
-                # Create the Series object using the values data reference and the title reference
-                # This uses the official Reference object for the title, avoiding potential string argument type errors.
-                series = Series(data_ref, title=title_ref)
+                # FIX: Create the Series object without the title argument first to avoid constructor error,
+                # then explicitly assign the title reference.
+                series = Series(data_ref)
+                series.title = title_ref
+                
                 chart_data_refs.append(series)
 
 
