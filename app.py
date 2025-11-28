@@ -55,11 +55,9 @@ def process_sheet(df, timestamp_col, psum_col):
     df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce", dayfirst=True)
     
     # Aggressively clean and ensure Power column is numeric
-    # New Robust Cleaning: remove all non-digit, non-decimal point, non-minus signs
-    # Then explicitly handle comma-as-decimal separator replacement
     power_series = df[psum_col].astype(str).str.strip()
     
-    # Handle the comma decimal separator replacement before conversion
+    # Handle the comma decimal separator replacement before conversion (Robust for various locales)
     power_series = power_series.str.replace(',', '.', regex=False)
     
     # Attempt conversion, coercing errors to NaN
@@ -67,11 +65,18 @@ def process_sheet(df, timestamp_col, psum_col):
     
     # Drop rows where essential data is missing/invalid
     initial_rows = len(df)
+    
+    # --- DIAGNOSTIC CHECK ---
+    timestamp_nans = df[timestamp_col].isna().sum()
+    power_nans = df[psum_col].isna().sum()
+    # ------------------------
+
     df = df.dropna(subset=[timestamp_col, psum_col])
     valid_rows = len(df)
     
     if df.empty:
-        st.warning(f"Sheet contained no valid data after cleaning (0 out of {initial_rows} rows kept). Check timestamp/power format.")
+        st.error(f"Sheet contained no valid data after cleaning (0 out of {initial_rows} rows kept).")
+        st.error(f"**Diagnostic:** {timestamp_nans} rows failed Timestamp conversion. {power_nans} rows failed Power conversion.")
         # If no valid data is found, return an empty DataFrame
         return pd.DataFrame()
 
@@ -176,8 +181,8 @@ def build_output_excel(sheets_dict):
                  st.warning(f"Day {date_str} in sheet {sheet_name} has {len(day_data)} entries, not the expected 144.")
 
             for idx, r in enumerate(day_data.itertuples(), start=3):
-                # Column 1: UTC Offset (Date)
-                ws.cell(row=idx, column=col_start, value=date_str) 
+                # Column 1: UTC Offset (minutes) - Set to 0 as placeholder since no offset is provided in source
+                ws.cell(row=idx, column=col_start, value=0) 
                 
                 # Column 2: Local Time Stamp
                 ws.cell(row=idx, column=col_start+1, value=r.Time) 
